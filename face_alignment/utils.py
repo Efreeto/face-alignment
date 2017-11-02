@@ -6,6 +6,7 @@ import torch
 import math
 import numpy as np
 import cv2
+import time
 
 
 def _gaussian(
@@ -76,12 +77,34 @@ def transform(point, center, scale, resolution, invert=False):
     return new_point.int()
 
 
+def center_scale_from_landmark(landmarks):
+    iterable = landmarks.transpose(0, 1)
+    minx = iterable[0].min()
+    miny = iterable[1].min()
+    maxx = iterable[0].max()
+    maxy = iterable[1].max()
+    center = torch.FloatTensor([maxx - (maxx - minx) / 2, maxy - (maxy - miny) / 2])
+    scale = (maxx - minx + maxy - miny) / 190  # --center and scale
+    return center, scale
+
+
+def bounding_box(iterable):
+    minx = iterable[0].min()
+    miny = iterable[1].min()
+    maxx = iterable[0].max()
+    maxy = iterable[1].max()
+    # mins = torch.min(iterable, 1).view(2)
+    # maxs = torch.max(iterable, 1).view(2)
+    center = torch.FloatTensor([maxx - (maxx - minx) / 2, maxy - (maxy - miny) / 2])
+    return center, (maxx - minx + maxy - miny) / 190  # --center and scale
+
+
 def crop(image, center, scale, resolution=256.0):
     # Crop around the center point
     """ Crops the image around the center. Input is expected to be an np.ndarray """
     ul = transform([1, 1], center, scale, resolution, True)
     br = transform([resolution, resolution], center, scale, resolution, True)
-    # pad = math.ceil(torch.norm((ul - br).float()) / 2.0 - (br[0] - ul[0]) / 2.0)
+    pad = math.ceil(torch.norm((ul - br).float()) / 2.0 - (br[0] - ul[0]) / 2.0)
     if image.ndim > 2:
         newDim = np.array([br[1] - ul[1], br[0] - ul[0],
                            image.shape[2]], dtype=np.int32)
@@ -109,19 +132,19 @@ def get_preds_fromhm(hm, center=None, scale=None):
         hm.view(hm.size(0), hm.size(1), hm.size(2) * hm.size(3)), 2)
     preds = idx.view(idx.size(0), idx.size(1), 1).repeat(1, 1, 2).float()
     preds[..., 0].apply_(lambda x: (x - 1) % hm.size(3) + 1)
-    preds[..., 1].add_(-1).div_(hm.size(2)).floor_().add_(1)
+    preds[..., 1].add_(-1).div_(hm.size(2)).floor().add_(1)
 
     for i in range(preds.size(0)):
         for j in range(preds.size(1)):
             hm_ = hm[i, j, :]
             pX, pY = preds[i, j, 0], preds[i, j, 1]
-            if pX > 0 and pX < 63 and pY > 0 and pY < 63:
+            if pX > 1 and pX < 63 and pY > 1 and pY < 63:
                 diff = torch.FloatTensor(
                     [hm_[int(pY),
                          int(pX) + 1] - hm_[int(pY),
                                             int(pX) - 1],
                      hm_[int(pY) + 1, int(pX)] - hm_[int(pY) - 1, int(pX)]])
-                preds[i, j].add_(diff.sign().mul(.25))
+                preds[i, j].add(diff.sign().mul(.25))
 
     preds.add_(1)
 
@@ -230,5 +253,34 @@ def flip(tensor, is_label=False):
         tensor = np.expand_dims(tensor, axis=0)
     tensor = torch.from_numpy(tensor)
     if was_cuda:
-        tensor = tensor.cuda()
+       tensor = tensor.cuda()
     return tensor
+
+
+def landmark_diff(lm1, lm2):
+    norm = abs(lm1[0][1] - lm1[8][1])
+    if norm < 0.1:
+        norm = 1
+    sum = 0
+    for i in range(len(lm1)):
+        sum = sum + \
+            math.sqrt(math.pow((float(lm1[i][0]) - float(lm2[i][0])),
+                               2) + math.pow((float(lm1[i][1]) - float(lm2[i][1])), 2))
+    return sum / norm
+
+
+def write2file(image, filename):
+    cv2.imwrite(filename+".png", image)
+    np.savetxt(filename+"_0.txt", image[...,0], fmt='%i')
+    np.savetxt(filename+"_1.txt", image[...,1], fmt='%i')
+    np.savetxt(filename+"_2.txt", image[...,2], fmt='%i')
+
+times = {}
+def tic(timename):
+    times[timename] = time.time()
+def toc(timename, fps=False):
+    elapsed = time.time() - times[timename]
+    if not fps:
+        print(timename, ": %.3f" % (elapsed))
+    else:
+        print(timename, ": %.3f (fps: %.1f)" % (elapsed, 1/elapsed))

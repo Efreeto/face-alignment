@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import math
-
+from torch.autograd import Variable
 
 def conv3x3(in_planes, out_planes, strd=1, padding=1, bias=False):
     "3x3 convolution with padding"
@@ -259,3 +259,54 @@ class ResNetDepth(nn.Module):
         x = self.fc(x)
 
         return x
+
+
+class STN(nn.Module):
+
+    def __init__(self):
+        super(STN, self).__init__()
+        self.downsample = nn.AvgPool2d(8) # or stride=448/60
+        self.net1_conv1 = nn.Conv2d(3,20,5)
+        self.net1_PReLU = nn.PReLU()
+        self.net1_pool = nn.MaxPool2d(2)
+        self.net1_conv2 = nn.Conv2d(20,48,5)
+        self.net1_conv3 = nn.Conv2d(48,64,3)
+        self.net1_conv4 = nn.Conv2d(64,80,3)
+        self.net1_fc5_1 = nn.Linear(80*3*3, 512)
+        self.net1_drop6 = nn.Dropout2d(0.2)
+        self.net1_68point = nn.Linear(512, 136)
+        self.loc_reg_ = nn.Linear(136, 6)   # in_features: 136
+
+        self.aye = Variable(torch.eye(2, 3)).unsqueeze(0)
+
+    def forward(self, inp):
+        x = self.downsample(inp)
+        x = self.net1_conv1(x)
+        x = self.net1_PReLU(x)
+        x = self.net1_pool(x)
+        x = self.net1_conv2(x)
+        x = self.net1_PReLU(x)
+        x = self.net1_pool(x)
+        x = self.net1_conv3(x)
+        x = self.net1_PReLU(x)
+        x = self.net1_pool(x)
+        x = self.net1_conv4(x)
+        x = self.net1_PReLU(x)
+        x = x.view(x.size(0), -1)
+        x = self.net1_fc5_1(x)
+        x = self.net1_PReLU(x)
+        x = self.net1_drop6(x)
+        x = self.net1_68point(x)
+        landmarks = self.net1_PReLU(x)
+        theta = self.loc_reg_(landmarks)
+        theta = theta.view(1,2,3)
+        # theta = Variable(torch.Tensor([[1, 0, 0],[0, 1, 0]]).cuda().view(1, 2, 3).repeat(inp.size(0), 1, 1), requires_grad=True) # identity transform matrix
+
+        if theta.is_cuda:
+            theta += self.aye.cuda()
+        else:
+            theta += self.aye
+
+        grid = F.affine_grid(theta, torch.Size([1, 3, 256, 256]))   # Prepare the transfomer grid with (256, 256) size that FAN expects, w.r.t theta
+        outp = F.grid_sample(inp, grid)                             # "Rotate" the image by applying the grid
+        return outp, landmarks, theta
