@@ -77,6 +77,26 @@ def transform(point, center, scale, resolution, invert=False):
     return new_point.int()
 
 
+def transform_Variable(point, center, scale, resolution, invert=False):
+    _pt = torch.ones(3)
+    _pt[0] = point.data[0]
+    _pt[1] = point.data[1]
+
+    h = 200.0 * scale
+    t = torch.eye(3)
+    t[0, 0] = resolution / h
+    t[1, 1] = resolution / h
+    t[0, 2] = resolution * (-center[0] / h + 0.5)
+    t[1, 2] = resolution * (-center[1] / h + 0.5)
+
+    if invert:
+        t = torch.inverse(t)
+
+    new_point = (torch.matmul(t, _pt))[0:2]
+
+    return new_point.int()
+
+
 def center_scale_from_landmark(landmarks):
     iterable = landmarks.transpose(0, 1)
     minx = iterable[0].min()
@@ -132,19 +152,19 @@ def get_preds_fromhm(hm, center=None, scale=None):
         hm.view(hm.size(0), hm.size(1), hm.size(2) * hm.size(3)), 2)
     preds = idx.view(idx.size(0), idx.size(1), 1).repeat(1, 1, 2).float()
     preds[..., 0].apply_(lambda x: (x - 1) % hm.size(3) + 1)
-    preds[..., 1].add_(-1).div_(hm.size(2)).floor().add_(1)
+    preds[..., 1].add_(-1).div_(hm.size(2)).floor_().add_(1)
 
     for i in range(preds.size(0)):
         for j in range(preds.size(1)):
             hm_ = hm[i, j, :]
             pX, pY = preds[i, j, 0], preds[i, j, 1]
-            if pX > 1 and pX < 63 and pY > 1 and pY < 63:
+            if pX > 0 and pX < 63 and pY > 0 and pY < 63:
                 diff = torch.FloatTensor(
                     [hm_[int(pY),
                          int(pX) + 1] - hm_[int(pY),
                                             int(pX) - 1],
                      hm_[int(pY) + 1, int(pX)] - hm_[int(pY) - 1, int(pX)]])
-                preds[i, j].add(diff.sign().mul(.25))
+                preds[i, j].add_(diff.sign().mul(.25))
 
     preds.add_(1)
 
@@ -156,6 +176,39 @@ def get_preds_fromhm(hm, center=None, scale=None):
                     preds[i, j], center, scale, hm.size(2), True)
 
     return preds, preds_orig
+
+
+def get_preds_fromhm_Variable(hm, center=None, scale=None):
+    max, idx = torch.max(
+        hm.view(hm.size(0), hm.size(1), hm.size(2) * hm.size(3)), 2)
+    preds = idx.view(idx.size(0), idx.size(1), 1).repeat(1, 1, 2).float()
+    preds_org = preds
+    preds[..., 0] = preds_org[..., 0].clamp(0, hm.size(3))
+    preds[..., 1] = preds_org[..., 1].add(-1).div(hm.size(2)).floor().add(1)
+
+    for i in range(preds.size(0)):
+        for j in range(preds.size(1)):
+            hm_ = hm[i, j, :]
+            pX, pY = preds[i, j, 0].data, preds[i, j, 1].data
+            if pX > 0 and pX < 63 and pY > 0 and pY < 63:
+                diff = torch.FloatTensor(
+                    [hm_[int(pY),
+                         int(pX) + 1] - hm_[int(pY),
+                                            int(pX) - 1],
+                     hm_[int(pY) + 1, int(pX)] - hm_[int(pY) - 1, int(pX)]])
+                preds[i, j] = preds[i, j].add(diff.sign().mul(.25))
+
+    preds = preds.add(1)
+
+    preds_orig = torch.zeros(preds.size())
+    if center is not None and scale is not None:
+        for i in range(hm.size(0)):
+            for j in range(hm.size(1)):
+                preds_orig[i, j] = transform_Variable(
+                    preds[i, j], center, scale, hm.size(2), True)
+
+    return preds, preds_orig
+
 
 # From pyzolib/paths.py (https://bitbucket.org/pyzo/pyzolib/src/tip/paths.py)
 

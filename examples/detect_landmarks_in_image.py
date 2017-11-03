@@ -11,14 +11,16 @@ warnings.filterwarnings("ignore")
 # Run the 3D face alignment on a test image.
 fa = face_alignment.FaceAlignment(face_alignment.LandmarksType._2D,
     enable_cuda=True, flip_input=False)
-# fa.train_STN_with_FAN("../Databases/8W", 1, "TwoStageFAN.pth")
-# fa.use_STN("TwoStageFAN.pth")
-fa.train_STN_standalone("../Databases/8W", 1, "TwoStage_standalone.pth")
-fa.use_STN("TwoStage_standalone.pth")
-# fa.use_STN_from_caffe()
-result_list = fa.process_folder("../Databases/8W", type=1)
 
-# fa.make_rct_files('land110_F')
+# fa.make_rct_files("../Databases/land110_F")
+
+fa.train_STN_with_FAN("../Databases/land110_F", 0, "STFAN_land110_F_Var.pth")
+fa.use_STN("STFAN_land110_F_Var.pth")
+# fa.train_STN_standalone("../Databases/8W", 1, "TwoStage_standalone.pth")
+# fa.use_STN("TwoStage_standalone.pth")
+# fa.use_STN_from_caffe()
+
+result_list = fa.process_folder("../Databases/land110_F", type=0)
 
 for [image_name, preds_all] in result_list:
     landmarks, gt_landmarks, proposal_img, frontal_img, errors = preds_all

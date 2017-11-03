@@ -481,14 +481,15 @@ class FaceAlignment:
         # criterion = nn.CrossEntropyLoss()
 
         # Observe that all parameters are being optimized
-        optimizer = optim.SGD(self.face_normalization_net.parameters(), lr=0.000001, momentum=0.9)
-        # optimizer = optim.SGD(self.face_normalization_net.parameters(), lr=0.001, momentum=0.9)
+        # optimizer = optim.Adam(self.face_normalization_net.parameters(), lr=0.01)
+        optimizer = optim.SGD(self.face_normalization_net.parameters(), lr=0.001, momentum=0.9)
         # optimizer = optim.RMSprop(self.face_normalization_net.parameters(), lr=0.00025, eps=1.e-8)
+        # optimizer = optim.Adam(self.face_normalization_net.parameters(), lr=0.001)
 
         # Decay LR by a factor of 0.1 every 7 epochs
-        scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=6, gamma=0.1)
+        scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=7, gamma=0.1)
 
-        num_epochs = 6
+        num_epochs = 25
         ##########
         since = time.time()
 
@@ -534,17 +535,20 @@ class FaceAlignment:
                     #     for i in range(nFeatures):
                     #         heatmap[i] = draw_gaussian(heatmap[i], transform(landmarks[i], center, scale, 64), 1)
                     #         reference_heatmaps[stack] = torch.from_numpy(heatmap).view(1, nFeatures, 64, 64).float()
-                    reference_heatmaps = torch.Tensor(1, 1, nFeatures, 64, 64)
                     heatmap = np.zeros((nFeatures, 64, 64))
                     for i in range(nFeatures):
                         heatmap[i] = draw_gaussian(heatmap[i], transform(landmarks[i], center, scale, 64), 1)
-                    reference_heatmaps[0] = torch.from_numpy(heatmap).view(1, nFeatures, 64, 64).float()
+                    reference_heatmaps = torch.from_numpy(heatmap).view(1, nFeatures, 64, 64).float()
 
                     # wrap them in Variable
                     if self.enable_cuda:
                         input, reference_heatmaps = input.cuda(), reference_heatmaps.cuda()
                     input = Variable(input, requires_grad = True)
                     reference_heatmaps = Variable(reference_heatmaps)
+                    # if self.enable_cuda:
+                    #     input, landmarks = input.cuda(), landmarks.cuda()
+                    # input = Variable(input, requires_grad = True)
+                    # landmarks = Variable(landmarks)
 
                     # zero the parameter gradients
                     optimizer.zero_grad()
@@ -553,25 +557,16 @@ class FaceAlignment:
                     frontal_img, _, theta = self.face_normalization_net(input)
 
                     hm = self.face_alignment_net(frontal_img)
-                    # pts, pts_img = get_preds_fromhm(hm[-1].data.cpu(), center, scale)
-                    # pts, pts_img = pts.view(nFeatures, 2) * 4, pts_img.view(nFeatures, 2)
+                    # pts, pts_img = get_preds_fromhm_Variable(hm[-1], center, scale)
+                    # pts, pts_img = pts.view(-1, 2) * 4, pts_img.view(-1, 2)
                     #
-                    # loss = criterion(pts_img, Variable(landmarks))
+                    # loss = criterion(pts_img, landmarks)
 
                     # loss = criterion(hm[-1], reference_heatmaps[-1])
 
-                    # loss = None
-                    # for i in range(4):
-                    #     stackLoss = criterion(hm[i], reference_heatmaps[i])
-                    #     if loss is None:
-                    #         loss = stackLoss
-                    #     else:
-                    #         loss += stackLoss
-
-
                     loss = None
                     for i in range(self.face_alignment_net.num_modules):
-                        moduleLoss = criterion(hm[i], reference_heatmaps[-1])
+                        moduleLoss = criterion(hm[i], reference_heatmaps[0])
                         if loss is None:
                             loss = moduleLoss
                         else:
@@ -609,10 +604,8 @@ class FaceAlignment:
 
     def use_STN(self, load_state_file):
         self.use_face_normalization = True
-
         self.face_normalization_net.eval()
-
-        # self.face_normalization_net.load_state_dict(torch.load(load_state_file))
+        self.face_normalization_net.load_state_dict(torch.load(load_state_file))
 
     def use_STN_from_caffe(self):
         self.use_face_normalization_from_caffe = True
