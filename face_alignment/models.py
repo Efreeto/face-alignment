@@ -303,9 +303,8 @@ class STN(nn.Module):
         # theta = Variable(torch.Tensor([[1, 0, 0],[0, 1, 0]]).cuda().view(1, 2, 3).repeat(inp.size(0), 1, 1), requires_grad=True) # identity transform matrix
 
         if theta.is_cuda:
-            theta += self.aye.cuda()
-        else:
-            theta += self.aye
+            self.aye = self.aye.cuda()
+        theta += self.aye
 
         grid = F.affine_grid(theta, torch.Size([1, 3, 256, 256]))   # Prepare the transfomer grid with (256, 256) size that FAN expects, w.r.t theta
         outp = F.grid_sample(inp, grid)                             # "Rotate" the image by applying the grid

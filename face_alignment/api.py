@@ -286,21 +286,21 @@ class FaceAlignment:
                 front_img = front_img[-1].transpose(1, 2, 0)
 
             # tic("face_alignment")
-            out = self.face_alignment_net(inp)[-1].data
+            out = self.face_alignment_net(inp)[-1]
             # toc("face_alignment")
             if self.flip_input:
                 out += flip(self.face_alignment_net(Variable(flip(inp.data),
-                                                             volatile=True))[-1].data.cpu(), is_label=True)
+                                                             volatile=True))[-1], is_label=True)
 
             if self.use_face_normalization or self.use_face_normalization_from_caffe:
                 theta_inv = torch.eye(3)
                 theta_inv[0:2] = theta.data[0]
                 theta_inv = torch.inverse(theta_inv)[0:2].unsqueeze(0).cuda()
                 grid = nn.functional.affine_grid(theta_inv, torch.Size([1, 68, 64, 64]))
-                out = nn.functional.grid_sample(out, grid).data.cpu()
+                out = nn.functional.grid_sample(out, grid)
 
-            pts, pts_img = get_preds_fromhm(out.cpu(), center, scale)
-            pts, pts_img = pts.view(68, 2) * 4, pts_img.view(68, 2)
+            pts, pts_img = get_preds_fromhm(out.data.cpu(), center, scale)
+            pts, pts_img = pts.view(-1, 2) * 4, pts_img.view(-1, 2)
 
             images_so_far += 1
             if type == 0:    #land110
@@ -419,8 +419,7 @@ class FaceAlignment:
                     # wrap them in Variable
                     if self.enable_cuda:
                         input, landmarks = input.cuda(), landmarks.cuda()
-                    input = Variable(input, requires_grad = True)
-                    landmarks = Variable(landmarks)
+                    input, landmarks = Variable(input), Variable(landmarks)
 
                     # zero the parameter gradients
                     optimizer.zero_grad()
@@ -481,15 +480,20 @@ class FaceAlignment:
         # criterion = nn.CrossEntropyLoss()
 
         # Observe that all parameters are being optimized
-        # optimizer = optim.Adam(self.face_normalization_net.parameters(), lr=0.01)
-        optimizer = optim.SGD(self.face_normalization_net.parameters(), lr=0.001, momentum=0.9)
+        optimizer = optim.SGD(self.face_normalization_net.parameters(), lr=0.2, momentum=0.9)
+        # optimizer = optim.SGD(self.face_normalization_net.parameters(), lr=0.01, momentum=0.9)
         # optimizer = optim.RMSprop(self.face_normalization_net.parameters(), lr=0.00025, eps=1.e-8)
         # optimizer = optim.Adam(self.face_normalization_net.parameters(), lr=0.001)
 
         # Decay LR by a factor of 0.1 every 7 epochs
-        scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=7, gamma=0.1)
+        scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.1)
 
         num_epochs = 25
+
+        # Freeze FAN
+        for param in self.face_alignment_net.parameters():
+            param.requires_grad = False
+
         ##########
         since = time.time()
 
@@ -527,28 +531,26 @@ class FaceAlignment:
                     input = crop(image, center, scale, resolution=480.0)
                     input = torch.from_numpy(input.transpose((2, 0, 1))).float().div(255.0).unsqueeze_(0)
 
-                    # create heat maps from ground truth landmarks
-                    nFeatures = len(landmarks)
-                    # reference_heatmaps = torch.Tensor(4, 1, nFeatures, 64, 64)
-                    # for stack in range(4):
-                    #     heatmap = np.zeros((nFeatures, 64, 64))
-                    #     for i in range(nFeatures):
-                    #         heatmap[i] = draw_gaussian(heatmap[i], transform(landmarks[i], center, scale, 64), 1)
-                    #         reference_heatmaps[stack] = torch.from_numpy(heatmap).view(1, nFeatures, 64, 64).float()
-                    heatmap = np.zeros((nFeatures, 64, 64))
-                    for i in range(nFeatures):
-                        heatmap[i] = draw_gaussian(heatmap[i], transform(landmarks[i], center, scale, 64), 1)
-                    reference_heatmaps = torch.from_numpy(heatmap).view(1, nFeatures, 64, 64).float()
+                    # # create heat maps from ground truth landmarks
+                    # nFeatures = len(landmarks)
+                    # # reference_heatmaps = torch.Tensor(4, 1, nFeatures, 64, 64)
+                    # # for stack in range(4):
+                    # #     heatmap = np.zeros((nFeatures, 64, 64))
+                    # #     for i in range(nFeatures):
+                    # #         heatmap[i] = draw_gaussian(heatmap[i], transform(landmarks[i], center, scale, 64), 1)
+                    # #         reference_heatmaps[stack] = torch.from_numpy(heatmap).view(1, nFeatures, 64, 64).float()
+                    # heatmap = np.zeros((nFeatures, 64, 64))
+                    # for i in range(nFeatures):
+                    #     heatmap[i] = draw_gaussian(heatmap[i], transform(landmarks[i], center, scale, 64), 1)
+                    # reference_heatmaps = torch.from_numpy(heatmap).view(1, nFeatures, 64, 64).float()
 
                     # wrap them in Variable
-                    if self.enable_cuda:
-                        input, reference_heatmaps = input.cuda(), reference_heatmaps.cuda()
-                    input = Variable(input, requires_grad = True)
-                    reference_heatmaps = Variable(reference_heatmaps)
                     # if self.enable_cuda:
-                    #     input, landmarks = input.cuda(), landmarks.cuda()
-                    # input = Variable(input, requires_grad = True)
-                    # landmarks = Variable(landmarks)
+                    #     input, reference_heatmaps = input.cuda(), reference_heatmaps.cuda()
+                    # input, reference_heatmaps = Variable(input), Variable(reference_heatmaps)
+                    if self.enable_cuda:
+                        input, landmarks = input.cuda(), landmarks.cuda()
+                    input, landmarks = Variable(input), Variable(landmarks)
 
                     # zero the parameter gradients
                     optimizer.zero_grad()
@@ -556,21 +558,30 @@ class FaceAlignment:
                     # forward
                     frontal_img, _, theta = self.face_normalization_net(input)
 
-                    hm = self.face_alignment_net(frontal_img)
-                    # pts, pts_img = get_preds_fromhm_Variable(hm[-1], center, scale)
-                    # pts, pts_img = pts.view(-1, 2) * 4, pts_img.view(-1, 2)
-                    #
-                    # loss = criterion(pts_img, landmarks)
+                    hm = self.face_alignment_net(frontal_img)[-1]
+                    if self.flip_input:
+                        hm += flip(self.face_alignment_net(Variable(flip(frontal_img)))[-1], is_label=True)
+
+                    theta_inv = Variable(torch.eye(3))
+                    theta_inv[0:2] = theta[0]
+                    theta_inv = torch.inverse(theta_inv)[0:2].unsqueeze(0).cuda()
+                    grid = nn.functional.affine_grid(theta_inv, torch.Size([1, 68, 64, 64]))
+                    hm = nn.functional.grid_sample(hm, grid)
+
+                    pts, pts_img = get_preds_fromhm_Variable(hm, center, scale)
+                    pts, pts_img = pts.view(-1, 2) * 4, pts_img.view(-1, 2)
+
+                    loss = criterion(pts_img, landmarks)
 
                     # loss = criterion(hm[-1], reference_heatmaps[-1])
 
-                    loss = None
-                    for i in range(self.face_alignment_net.num_modules):
-                        moduleLoss = criterion(hm[i], reference_heatmaps[0])
-                        if loss is None:
-                            loss = moduleLoss
-                        else:
-                            loss += moduleLoss
+                    # loss = None
+                    # for i in range(self.face_alignment_net.num_modules):
+                    #     moduleLoss = criterion(hm[i], reference_heatmaps[0])
+                    #     if loss is None:
+                    #         loss = moduleLoss
+                    #     else:
+                    #         loss += moduleLoss
 
                     # backward + optimize only if in training phase
                     if phase == 'train':

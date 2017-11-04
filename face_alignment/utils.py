@@ -8,6 +8,8 @@ import numpy as np
 import cv2
 import time
 
+from torch.autograd import Variable
+
 
 def _gaussian(
         size=3, sigma=0.25, amplitude=1, normalize=False, width=None,
@@ -78,12 +80,16 @@ def transform(point, center, scale, resolution, invert=False):
 
 
 def transform_Variable(point, center, scale, resolution, invert=False):
-    _pt = torch.ones(3)
-    _pt[0] = point.data[0]
-    _pt[1] = point.data[1]
+    _pt = Variable(torch.ones(3), requires_grad=True)
+    if point.is_cuda:
+        _pt = _pt.cuda()
+    _pt[0] = point[0]
+    _pt[1] = point[1]
 
     h = 200.0 * scale
-    t = torch.eye(3)
+    t = Variable(torch.eye(3))
+    if point.is_cuda:
+        t = t.cuda()
     t[0, 0] = resolution / h
     t[1, 1] = resolution / h
     t[0, 2] = resolution * (-center[0] / h + 0.5)
@@ -182,25 +188,24 @@ def get_preds_fromhm_Variable(hm, center=None, scale=None):
     max, idx = torch.max(
         hm.view(hm.size(0), hm.size(1), hm.size(2) * hm.size(3)), 2)
     preds = idx.view(idx.size(0), idx.size(1), 1).repeat(1, 1, 2).float()
-    preds_org = preds
-    preds[..., 0] = preds_org[..., 0].clamp(0, hm.size(3))
-    preds[..., 1] = preds_org[..., 1].add(-1).div(hm.size(2)).floor().add(1)
+    preds[..., 0] = (preds[..., 0] - 1) % hm.size(3) + 1
+    preds[..., 1] = preds[..., 1].add(-1).div(hm.size(2)).floor().add(1)
 
     for i in range(preds.size(0)):
         for j in range(preds.size(1)):
-            hm_ = hm[i, j, :]
-            pX, pY = preds[i, j, 0].data, preds[i, j, 1].data
+            hm_ = hm[i, j, :].data
+            pX, pY = preds[i, j, 0].data.cpu().numpy(), preds[i, j, 1].data.cpu().numpy()
             if pX > 0 and pX < 63 and pY > 0 and pY < 63:
-                diff = torch.FloatTensor(
+                diff = Variable(torch.FloatTensor(
                     [hm_[int(pY),
                          int(pX) + 1] - hm_[int(pY),
                                             int(pX) - 1],
-                     hm_[int(pY) + 1, int(pX)] - hm_[int(pY) - 1, int(pX)]])
+                     hm_[int(pY) + 1, int(pX)] - hm_[int(pY) - 1, int(pX)]])).cuda()
                 preds[i, j] = preds[i, j].add(diff.sign().mul(.25))
 
     preds = preds.add(1)
 
-    preds_orig = torch.zeros(preds.size())
+    preds_orig = preds.clone()
     if center is not None and scale is not None:
         for i in range(hm.size(0)):
             for j in range(hm.size(1)):
