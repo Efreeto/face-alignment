@@ -263,7 +263,7 @@ class ResNetDepth(nn.Module):
 
 class STN(nn.Module):
 
-    def __init__(self):
+    def __init__(self, tranformer_from_eye):
         super(STN, self).__init__()
         self.downsample = nn.AvgPool2d(8) # or stride=448/60
         self.net1_conv1 = nn.Conv2d(3,20,5)
@@ -277,7 +277,10 @@ class STN(nn.Module):
         self.net1_68point = nn.Linear(512, 136)
         self.loc_reg_ = nn.Linear(136, 6)   # in_features: 136
 
-        self.aye = Variable(torch.eye(2, 3)).unsqueeze(0)
+        if tranformer_from_eye:
+            self.base_theta = Variable(torch.eye(2, 3)).unsqueeze(0)
+        else:
+            self.base_theta = Variable(torch.zeros(2,3)).unsqueeze(0)
 
     def forward(self, inp):
         x = self.downsample(inp)
@@ -303,8 +306,8 @@ class STN(nn.Module):
         # theta = Variable(torch.Tensor([[1, 0, 0],[0, 1, 0]]).cuda().view(1, 2, 3).repeat(inp.size(0), 1, 1), requires_grad=True) # identity transform matrix
 
         if theta.is_cuda:
-            self.aye = self.aye.cuda()
-        theta += self.aye
+            self.base_theta = self.base_theta.cuda()
+        theta += self.base_theta
 
         grid = F.affine_grid(theta, torch.Size([1, 3, 256, 256]))   # Prepare the transfomer grid with (256, 256) size that FAN expects, w.r.t theta
         outp = F.grid_sample(inp, grid)                             # "Rotate" the image by applying the grid

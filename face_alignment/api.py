@@ -5,7 +5,7 @@ from enum import Enum
 
 import dlib
 import torch.nn as nn
-from skimage import io
+from skimage import io, color
 from torch.autograd import Variable
 
 try:
@@ -63,13 +63,14 @@ class FaceAlignment:
 
     def __init__(self, landmarks_type, network_size=NetworkSize.LARGE,
                  enable_cuda=True, enable_cudnn=True, flip_input=False,
-                 use_cnn_face_detector=False):
+                 use_cnn_face_detector=False, tranformer_from_eye=False):
         self.enable_cuda = enable_cuda
         self.use_cnn_face_detector = use_cnn_face_detector
         self.use_face_normalization = False
         self.use_face_normalization_from_caffe = False
         self.flip_input = flip_input
         self.landmarks_type = landmarks_type
+        self.tranformer_from_eye = tranformer_from_eye
         base_path = os.path.join(appdata_dir('face_alignment'), "data")
 
         if not os.path.exists(base_path):
@@ -149,7 +150,7 @@ class FaceAlignment:
                 self.depth_prediciton_net.cuda()
             self.depth_prediciton_net.eval()
 
-        self.face_normalization_net = STN()
+        self.face_normalization_net = STN(self.tranformer_from_eye)
         if self.enable_cuda:
             self.face_normalization_net.cuda()
 
@@ -206,11 +207,26 @@ class FaceAlignment:
                 np.savetxt(os.path.splitext(image_name)[0] + '.rct_dlib_cpu',
                            (d.left(), d.top(), d.right(), d.bottom()), fmt='%d', newline=' ')
 
+    def make_rotated_images(self, path_src, path_tag):
+
+        types = ('*.jpg', '*.png')
+        images_list = []
+        for files in types:
+            images_list.extend(sorted(glob.glob(os.path.join(path_src, files))))
+
+        for image_name in images_list:
+            reverse_angle = 1.0
+            for angle in [5, 10, 15, 20, 25, 30]:
+                image = io.imread(image_name)
+
+
+
     def get_landmarks(self, input_image, type, all_faces=False):
         print(input_image, " ---")
         # tic("total")
         try:
             image = io.imread(input_image)
+            image = color.grey2rgb(image)   # For some gray scale images
         except IOError:
             print("Error opening file")
             return None, None, None
@@ -467,6 +483,10 @@ class FaceAlignment:
 
 
     def train_STN_with_FAN(self, path, type, save_state_file):
+
+        use_Variable_grad = False
+        use_FAN_training = True
+
         image_datasets = {x: FaceLandmarksDataset(path, type,
                                                   transforms=transforms.Compose([
                                                       ToTensor()
@@ -480,19 +500,23 @@ class FaceAlignment:
         # criterion = nn.CrossEntropyLoss()
 
         # Observe that all parameters are being optimized
-        optimizer = optim.SGD(self.face_normalization_net.parameters(), lr=0.2, momentum=0.9)
+        if use_FAN_training:
+            self.face_alignment_net.train()
+            model_params = list(self.face_normalization_net.parameters()) + list(self.face_alignment_net.parameters())
+            optimizer = optim.SGD(model_params, lr=0.01, momentum=0.9)
+        else:
+            # Freeze FAN
+            for param in self.face_alignment_net.parameters():
+                param.requires_grad = False
+            optimizer = optim.SGD(self.face_normalization_net.parameters(), lr=0.02, momentum=0.9)
         # optimizer = optim.SGD(self.face_normalization_net.parameters(), lr=0.01, momentum=0.9)
         # optimizer = optim.RMSprop(self.face_normalization_net.parameters(), lr=0.00025, eps=1.e-8)
         # optimizer = optim.Adam(self.face_normalization_net.parameters(), lr=0.001)
 
         # Decay LR by a factor of 0.1 every 7 epochs
-        scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.1)
+        scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=4, gamma=0.1)
 
-        num_epochs = 25
-
-        # Freeze FAN
-        for param in self.face_alignment_net.parameters():
-            param.requires_grad = False
+        num_epochs = 30
 
         ##########
         since = time.time()
@@ -531,26 +555,29 @@ class FaceAlignment:
                     input = crop(image, center, scale, resolution=480.0)
                     input = torch.from_numpy(input.transpose((2, 0, 1))).float().div(255.0).unsqueeze_(0)
 
-                    # # create heat maps from ground truth landmarks
-                    # nFeatures = len(landmarks)
-                    # # reference_heatmaps = torch.Tensor(4, 1, nFeatures, 64, 64)
-                    # # for stack in range(4):
-                    # #     heatmap = np.zeros((nFeatures, 64, 64))
-                    # #     for i in range(nFeatures):
-                    # #         heatmap[i] = draw_gaussian(heatmap[i], transform(landmarks[i], center, scale, 64), 1)
-                    # #         reference_heatmaps[stack] = torch.from_numpy(heatmap).view(1, nFeatures, 64, 64).float()
-                    # heatmap = np.zeros((nFeatures, 64, 64))
-                    # for i in range(nFeatures):
-                    #     heatmap[i] = draw_gaussian(heatmap[i], transform(landmarks[i], center, scale, 64), 1)
-                    # reference_heatmaps = torch.from_numpy(heatmap).view(1, nFeatures, 64, 64).float()
+                    if use_Variable_grad:
+                        # wrap them in Variable
+                        if self.enable_cuda:
+                            input, landmarks = input.cuda(), landmarks.cuda()
+                        input, landmarks = Variable(input), Variable(landmarks)
+                    else:
+                        # create heat maps from ground truth landmarks
+                        nFeatures = len(landmarks)
+                        # reference_heatmaps = torch.Tensor(4, 1, nFeatures, 64, 64)
+                        # for stack in range(4):
+                        #     heatmap = np.zeros((nFeatures, 64, 64))
+                        #     for i in range(nFeatures):
+                        #         heatmap[i] = draw_gaussian(heatmap[i], transform(landmarks[i], center, scale, 64), 1)
+                        #         reference_heatmaps[stack] = torch.from_numpy(heatmap).view(1, nFeatures, 64, 64).float()
+                        heatmap = np.zeros((nFeatures, 64, 64))
+                        for i in range(nFeatures):
+                            heatmap[i] = draw_gaussian(heatmap[i], transform(landmarks[i], center, scale, 64), 1)
+                        reference_heatmaps = torch.from_numpy(heatmap).view(1, nFeatures, 64, 64).float()
 
-                    # wrap them in Variable
-                    # if self.enable_cuda:
-                    #     input, reference_heatmaps = input.cuda(), reference_heatmaps.cuda()
-                    # input, reference_heatmaps = Variable(input), Variable(reference_heatmaps)
-                    if self.enable_cuda:
-                        input, landmarks = input.cuda(), landmarks.cuda()
-                    input, landmarks = Variable(input), Variable(landmarks)
+                        # wrap them in Variable
+                        if self.enable_cuda:
+                            input, reference_heatmaps = input.cuda(), reference_heatmaps.cuda()
+                        input, reference_heatmaps = Variable(input), Variable(reference_heatmaps)
 
                     # zero the parameter gradients
                     optimizer.zero_grad()
@@ -562,26 +589,41 @@ class FaceAlignment:
                     if self.flip_input:
                         hm += flip(self.face_alignment_net(Variable(flip(frontal_img)))[-1], is_label=True)
 
-                    theta_inv = Variable(torch.eye(3))
-                    theta_inv[0:2] = theta[0]
-                    theta_inv = torch.inverse(theta_inv)[0:2].unsqueeze(0).cuda()
-                    grid = nn.functional.affine_grid(theta_inv, torch.Size([1, 68, 64, 64]))
-                    hm = nn.functional.grid_sample(hm, grid)
+                    if use_Variable_grad:
+                        theta_inv = Variable(torch.eye(3))
+                        theta_inv[0:2] = theta[0]
+                        theta_inv = torch.inverse(theta_inv)[0:2].unsqueeze(0).cuda()
+                        grid = nn.functional.affine_grid(theta_inv, torch.Size([1, 68, 64, 64]))
+                        hm = nn.functional.grid_sample(hm, grid)
 
-                    pts, pts_img = get_preds_fromhm_Variable(hm, center, scale)
-                    pts, pts_img = pts.view(-1, 2) * 4, pts_img.view(-1, 2)
+                        pts, pts_img = get_preds_fromhm_Variable(hm, center, scale)
+                        pts, pts_img = pts.view(-1, 2) * 4, pts_img.view(-1, 2)
+                        loss = criterion(pts_img, landmarks)
 
-                    loss = criterion(pts_img, landmarks)
 
-                    # loss = criterion(hm[-1], reference_heatmaps[-1])
+                        # pts, pts_img = get_preds_fromhm_Variable(hm, center, scale)
+                        # pts, pts_img = pts.view(-1, 2) * 4, pts_img.view(-1, 2)
+                        #
+                        # # grid = nn.functional.affine_grid(theta.data, torch.Size([1, 1, 68, 2]))
+                        # # landmarks_rot = nn.functional.grid_sample(landmarks.unsqueeze(0).unsqueeze(0), grid)
+                        # # loss = criterion(pts_img, landmarks_rot)
+                        #
+                        # theta_ = theta[0].data.t()
+                        # landmarks3 = torch.cat((landmarks.data, torch.ones(68,1)), dim=1)
+                        # landmarks_rot3 = torch.matmul(landmarks3, theta_)
+                        # landmarks_rot = landmarks_rot3[:, 0:2]
+                        # loss = criterion(pts_img, landmarks_rot)
 
-                    # loss = None
-                    # for i in range(self.face_alignment_net.num_modules):
-                    #     moduleLoss = criterion(hm[i], reference_heatmaps[0])
-                    #     if loss is None:
-                    #         loss = moduleLoss
-                    #     else:
-                    #         loss += moduleLoss
+                    else:
+                        loss = criterion(hm, reference_heatmaps)
+
+                        # loss = None
+                        # for i in range(self.face_alignment_net.num_modules):
+                        #     moduleLoss = criterion(hm[i], reference_heatmaps[0])
+                        #     if loss is None:
+                        #         loss = moduleLoss
+                        #     else:
+                        #         loss += moduleLoss
 
                     # backward + optimize only if in training phase
                     if phase == 'train':

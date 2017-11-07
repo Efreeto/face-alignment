@@ -13,15 +13,16 @@ fa = face_alignment.FaceAlignment(face_alignment.LandmarksType._2D,
     enable_cuda=True, flip_input=False)
 
 # fa.make_rct_files("../Databases/lfpw/trainset")
+# fa.make_rotated_images("../Databases/lfpw/trainset", "../Databases/lfpw_rot/trainset")
 # result_list = []
 
-fa.train_STN_with_FAN("../Databases/8W", 1, "STFAN_8W_Var.pth")
-fa.use_STN("STFAN_8W_Var.pth")
+fa.train_STN_with_FAN("../Databases/lfpw/trainset", 2, "STFAN_lfpw_trainset.pth")
+fa.use_STN("STFAN_lfpw_trainset.pth")
 # fa.train_STN_standalone("../Databases/8W", 1, "TwoStage_standalone.pth")
 # fa.use_STN("TwoStage_standalone.pth")
 # fa.use_STN_from_caffe()
 
-result_list = fa.process_folder("../Databases/8W", 1)
+result_list = fa.process_folder("../Databases/lfpw/trainset", 2)
 
 for [image_name, preds_all] in result_list:
     landmarks, gt_landmarks, proposal_img, frontal_img, errors = preds_all
