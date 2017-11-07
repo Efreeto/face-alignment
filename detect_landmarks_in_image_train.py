@@ -55,28 +55,22 @@ def show_landmarks_batch(sample_batched):
         plt.title('Batch from dataloader')
 
 
-def plotLandmarks(landmarks, frame, pointColor):
+def plotLandmarks(calculated, expected, frame):
     for i in range(68):
+        expectedPointColor = (0,0,255)
+        calculatedPointColor = (255,255,255)
         # for landmark in landmarks:
-        cv2.circle(frame, (int(landmarks[0][i][0]), int(landmarks[0][i][1])),
-                   1, pointColor, thickness=2)
+        cv2.circle(frame, (int(expected[0][i][0]), int(expected[0][i][1])),
+                   1, expectedPointColor, thickness=2)
+        cv2.circle(frame, (int(calculated[0][i][0]), int(calculated[0][i][1])),
+                   1, calculatedPointColor, thickness=2)
+        cv2.line(frame, (int(expected[0][i][0]), int(expected[0][i][1])), (int(calculated[0][i][0]), int(calculated[0][i][1])), (255,255,255),thickness=1,lineType=1)
 
-
-# # Data augmentation and normalization for training
-# # Just normalization for validation
-# data_transforms = {
-#     'train': transforms.Compose([
-#         transforms.Scale((224,224)),
-#         transforms.ToTensor()
-#     ]),
-#     'val': transforms.Compose([
-#         transforms.Scale((224,224)),
-#         transforms.ToTensor()
-#     ]),
-# }
 
 data_transforms = {
      'trainset': transforms.Compose([
+         RandomHorizFlip(),
+         RandomRotation(),
          LandmarkCrop(256),
          CreateHeatmaps()
      ]),
@@ -90,8 +84,7 @@ image_datasets = {x: FaceLandmarksDataset(os.path.join('/home/cpaulse/lfpw', x),
                                         transforms=data_transforms[x])
                     for x in ['trainset', 'testset']}
 
-the_batch_size=4
-dataloaders = {x: DataLoader(image_datasets[x], shuffle=True, batch_size=the_batch_size, num_workers=4)
+dataloaders = {x: DataLoader(image_datasets[x], shuffle=True, batch_size=10, num_workers=4)
                   for x in ['trainset', 'testset']}
 
 dataset_sizes = {x: len(image_datasets[x]) for x in ['trainset', 'testset']}
@@ -134,7 +127,7 @@ def train_model(model, criterion, optimizer, scheduler, dataloaders, num_epochs=
             print("=> no checkpoint found at '{}'".format(resume))
 
     for epoch in range(start_epoch,num_epochs):
-        print('Epoch {}/{}'.format(epoch, num_epochs - 1))
+        print('Epoch {}/{} Learning rate:{}'.format(epoch, num_epochs - 1, optimizer.param_groups[0]['lr']))
         print('-' * 10)
 
         # Each epoch has a training and validation phase
@@ -171,6 +164,7 @@ def train_model(model, criterion, optimizer, scheduler, dataloaders, num_epochs=
                         _, outputs, _ = model(input)
                     if USE_FAN:
                         outputs = model(input)
+
                         if phase == 'trainset':
                             loss = None
                             for i in range(model.num_modules):
@@ -180,9 +174,9 @@ def train_model(model, criterion, optimizer, scheduler, dataloaders, num_epochs=
                                 else:
                                     loss += moduleLoss
                         else:
-                            center, scale = center_scale_from_landmark(landmarks[batch])
+                            center, scale = center_scale_from_landmark(landmarks[batch].cpu().numpy())
                             pts, pts_img = utils.get_preds_fromhm(outputs[-1].cpu().data, center, scale)
-                            loss = utils.landmark_diff(pts_img[0].numpy(), landmarks[batch])
+                            loss = utils.landmark_diff(pts_img[0].numpy(), landmarks[batch].cpu().numpy())
                     else:
                         loss = criterion(outputs, landmarks[batch])
                     if phase == 'trainset':
@@ -198,7 +192,7 @@ def train_model(model, criterion, optimizer, scheduler, dataloaders, num_epochs=
 
             epoch_loss = running_loss / dataset_sizes[phase]
 
-            print('{} Loss: {:.4f}'.format(
+            print('{} Loss: {:.6f}'.format(
                 phase, epoch_loss))
 
             # deep copy the model
@@ -230,39 +224,34 @@ def save_checkpoint(state, is_best, filename='checkpoint.pth.tar'):
         copyfile(filename, 'model_best.pth.tar')
 
 
-def visualize_model(model, dataloader, num_images=60):
+def visualize_model(model, dataloader, num_images=120):
     images_so_far = 0
     running_loss = 0.0
-#    fig = plt.figure()
 
     for i, data in enumerate(dataloader):
         inputs, original_input, landmarks = data['image'], data['original'], data['landmarks']
-        original_input = original_input[0].numpy()
+        original_input = cv2.cvtColor( original_input[0].numpy(), cv2.COLOR_RGB2BGR)
         if use_gpu:
             inputs, landmarks = inputs[0].cuda(), landmarks.cuda()
 
         inputs = Variable(inputs)
-        landmarks = Variable(landmarks)
+        #landmarks = Variable(landmarks)
 
         if USE_STN:
             _, outputs, _ = model(inputs)
         else:
             outputs = model(inputs)
-            center, scale = center_scale_from_landmark(landmarks.data)
+            center, scale = center_scale_from_landmark(landmarks.cpu().numpy())
             _, out_landmarks = utils.get_preds_fromhm(outputs[-1].cpu().data, center, scale)
 
         for j in range(inputs.size()[0]):
             images_so_far += 1
-            """
-            ax = plt.subplot(num_images//2, 2, images_so_far)
-            ax.axis('off')
-            image = inputs.data[j].cpu().numpy().transpose((1, 2, 0))
-            out_landmarks = outputs.data[j].cpu().numpy().reshape(-1, 2)
-            landmarks = landmarks.view(1, -1)
-            loss = criterion(outputs, landmarks)
-            running_loss += loss.data[0]
-            """
-            plotLandmarks(out_landmarks, original_input, (0, 0, 255))
+            mse = utils.landmark_diff(out_landmarks[0].numpy(), landmarks.cpu().numpy()[0])
+            running_loss += mse
+            print('MSE: {}'.format(mse))
+            errorText = "MSE:{:4.2f} ".format(mse)
+            cv2.putText(original_input, errorText, (0, 50), cv2.FONT_HERSHEY_SIMPLEX, 1., (0, 0, 255), 2, cv2.LINE_AA)
+            plotLandmarks(out_landmarks, landmarks.cpu().numpy(), original_input)
             cv2.imwrite("/home/cpaulse/testOut/lmk{}.png".format(i), original_input)
 
             #show_landmarks(image, out_landmarks[0].numpy())
@@ -288,35 +277,41 @@ if USE_FAN:
     fan_dict = {k.replace('module.', ''): v for k,
                 v in fan_weights['state_dict'].items()}
     """
-    model_ft = FAN(4)
+    model_ft = FAN(3)
     #model_ft.load_state_dict(fan_dict)
 
 if use_gpu:
     model_ft = model_ft.cuda()
 
 criterion = nn.MSELoss()
-if 1:
+if 0:
     # Observe that all parameters are being optimized
-    optimizer_ft = optim.RMSprop(model_ft.parameters(), lr=2.5e-5)
+    model_ft.load_state_dict(torch.load('mytraining.pth'))
+    optimizer_ft = optim.RMSprop(model_ft.parameters(), lr=2.5e-4)
+    # exp_lr_scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer_ft, gamma=0.1)
 
     # Decay LR by a factor of 0.1 every 7 epochs
-    #exp_lr_scheduler = lr_scheduler.StepLR(optimizer_ft, step_size=7, gamma=0.1)
+    exp_lr_scheduler = lr_scheduler.StepLR(optimizer_ft, step_size=7, gamma=0.1)
 
-#    model_ft = train_model(model_ft, criterion, optimizer_ft, exp_lr_scheduler, dataloaders=dataloaders,
+    model_ft = train_model(model_ft, criterion, optimizer_ft, exp_lr_scheduler, dataloaders=dataloaders,
+                        num_epochs=10)
+#    model_ft = train_model(model_ft, criterion, optimizer_ft, None, dataloaders=dataloaders,
 #                        num_epochs=20)
-    model_ft = train_model(model_ft, criterion, optimizer_ft, None, dataloaders=dataloaders,
-                        num_epochs=20)
 
     torch.save(model_ft.state_dict(), 'mytraining.pth')
 else:
-    # /home/cpaulse/FAN_local/model_best.pth.tar
-    # model_ft.load_state_dict(torch.load('/home/cpaulse/FAN_local/model_best.pth.tar')['state_dict'])
     model_ft.load_state_dict(torch.load('mytraining.pth'))
 
-validationdataset = FaceLandmarksDataset('/home/cpaulse/lfpw/trainset', transforms=transforms.Compose([
+
+#validationdataset = FaceLandmarksDataset('/home/cpaulse/lfpw/testset', transforms=transforms.Compose([
+#        LandmarkCropWithOriginal(256)
+#    ]))
+
+validationdataset = FaceLandmarksDataset('/home/cpaulse/lfpw/testset', transforms=transforms.Compose([
+        ColorJitter(),
         LandmarkCropWithOriginal(256)
     ]))
 
-dataloader = DataLoader(validationdataset, shuffle=True, num_workers=1)
+dataloader = DataLoader(validationdataset, shuffle=False, num_workers=1)
 
 visualize_model(model_ft, dataloader)

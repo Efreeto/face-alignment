@@ -6,6 +6,8 @@ import torch
 import math
 import numpy as np
 import cv2
+import time
+import scipy
 
 
 def _gaussian(
@@ -55,7 +57,6 @@ def draw_gaussian(image, point, sigma):
     image[image > 1] = 1
     return image
 
-
 def transform(point, center, scale, resolution, invert=False):
     _pt = torch.ones(3)
     _pt[0] = point[0]
@@ -76,12 +77,23 @@ def transform(point, center, scale, resolution, invert=False):
     return new_point.int()
 
 
+def bounding_box(iterable):
+    minx = iterable[0].min()
+    miny = iterable[1].min()
+    maxx = iterable[0].max()
+    maxy = iterable[1].max()
+    # mins = torch.min(iterable, 1).view(2)
+    # maxs = torch.max(iterable, 1).view(2)
+    center = torch.FloatTensor([maxx - (maxx - minx) / 2, maxy - (maxy - miny) / 2])
+    return center, (maxx - minx + maxy - miny) / 190, (minx, miny, maxx, maxy)  # --center and scale
+
+
 def crop(image, center, scale, resolution=256.0):
     # Crop around the center point
     """ Crops the image around the center. Input is expected to be an np.ndarray """
     ul = transform([1, 1], center, scale, resolution, True)
     br = transform([resolution, resolution], center, scale, resolution, True)
-    # pad = math.ceil(torch.norm((ul - br).float()) / 2.0 - (br[0] - ul[0]) / 2.0)
+    pad = math.ceil(torch.norm((ul - br).float()) / 2.0 - (br[0] - ul[0]) / 2.0)
     if image.ndim > 2:
         newDim = np.array([br[1] - ul[1], br[0] - ul[0],
                            image.shape[2]], dtype=np.int32)
@@ -104,12 +116,30 @@ def crop(image, center, scale, resolution=256.0):
     return newImg
 
 
+def crop2(image, bbox):
+    # Crop and scale to prepare for TwoStage
+    (left, top, right, bottom) = bbox
+    sh_scale = 0.1
+    rows = image.shape[0]
+    cols = image.shape[1]
+    w = right-left
+    h = bottom-top
+    rct_left = max(round(left - sh_scale*w), 0)
+    rct_top = max(round(top - sh_scale*h), 0)
+    rct_right = min(round(right + sh_scale*w), cols)
+    rct_bottom = min(round(bottom+ sh_scale*h), cols)
+
+    newImg = image[rct_top:rct_bottom, rct_left:rct_right]
+    newImg = cv2.resize(newImg, (480, 480))
+    return newImg
+
+
 def get_preds_fromhm(hm, center=None, scale=None):
     max, idx = torch.max(
         hm.view(hm.size(0), hm.size(1), hm.size(2) * hm.size(3)), 2)
     preds = idx.view(idx.size(0), idx.size(1), 1).repeat(1, 1, 2).float()
     preds[..., 0].apply_(lambda x: (x - 1) % hm.size(3) + 1)
-    preds[..., 1].add_(-1).div_(hm.size(2)).floor_().add_(1)
+    preds[..., 1].add_(-1).div_(hm.size(2)).floor().add_(1)
 
     for i in range(preds.size(0)):
         for j in range(preds.size(1)):
@@ -121,7 +151,7 @@ def get_preds_fromhm(hm, center=None, scale=None):
                          int(pX) + 1] - hm_[int(pY),
                                             int(pX) - 1],
                      hm_[int(pY) + 1, int(pX)] - hm_[int(pY) - 1, int(pX)]])
-                preds[i, j].add_(diff.sign().mul(.25))
+                preds[i, j].add(diff.sign().mul(.25))
 
     preds.add_(1)
 
@@ -202,9 +232,13 @@ def shuffle_lr(parts, pairs=None):
                  [50, 52], [49, 53], [48, 54], [61, 63], [60, 64], [67, 65], [59, 55], [58, 56]]
     for matched_p in pairs:
         idx1, idx2 = matched_p[0], matched_p[1]
-        tmp = np.copy(parts[..., idx1])
-        np.copyto(parts[..., idx1], parts[..., idx2])
-        np.copyto(parts[..., idx2], tmp)
+        tmp = parts[idx1].copy()
+        parts[idx1] = parts[idx2].copy()
+        parts[idx2] = tmp
+        # tmp = np.copy(parts[..., idx1])
+        # np.copyto(parts[..., idx1], parts[..., idx2])
+        # np.copyto(parts[..., idx2], tmp)
+
     return parts
 
 
@@ -230,5 +264,70 @@ def flip(tensor, is_label=False):
         tensor = np.expand_dims(tensor, axis=0)
     tensor = torch.from_numpy(tensor)
     if was_cuda:
-        tensor = tensor.cuda()
+       tensor = tensor.cuda()
     return tensor
+
+
+def landmark_diff(lm1, lm2, use_max=True):
+    norm = abs(lm1[0][1] - lm1[8][1])
+    if norm < 0.1:
+        norm = 1
+
+    distances = scipy.spatial.distance.cdist(lm1, lm2)
+    if use_max:
+        return distances.max()/norm
+    else:
+        distances = distances.sum(axis=-1)
+        distances = np.sqrt(distances)/norm
+        return distances
+
+def rotate(origin, point, angle):
+    """
+    Rotate a point counterclockwise by a given angle around a given origin.
+
+    The angle should be given in degrees.
+    modified for origin at top left (increasing y proceeding downward)
+    """
+    angle = angle * math.pi / 180.
+    ox, oy = origin
+    px, py = point
+    if px is -1 and py is -1:
+        return px, py
+    # flip y axis
+    ox = float(ox)
+    oy = float(oy)
+    oy = -oy
+    py = -py
+
+    s = math.sin(angle)
+    c = math.cos(angle)
+
+    # translate point back to origin:
+    px -= ox
+    py -= oy
+
+    # rotate point
+    xnew = px * c - py * s
+    ynew = px * s + py * c
+
+    # translate point back:
+    qx = xnew + ox
+    qy = ynew + oy
+    qy = -qy
+    return qx, qy
+
+def write2file(image, filename):
+    cv2.imwrite(filename+".png", image)
+    np.savetxt(filename+"_0.txt", image[...,0], fmt='%i')
+    np.savetxt(filename+"_1.txt", image[...,1], fmt='%i')
+    np.savetxt(filename+"_2.txt", image[...,2], fmt='%i')
+
+times = {}
+def tic(timename):
+    times[timename] = time.time()
+def toc(timename, fps=False):
+    elapsed = time.time() - times[timename]
+    if not fps:
+        print(timename, ": %.3f" % (elapsed))
+    else:
+        print(timename, ": %.3f (fps: %.1f)" % (elapsed, 1/elapsed))
