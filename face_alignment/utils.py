@@ -401,7 +401,7 @@ def display_landmarks(image, landmarks, gt_landmarks, fig_title):
         plt.plot(landmarks[48:60,0],landmarks[48:60,1],marker='o',markersize=6,linestyle='-',color='w',lw=2)
         plt.plot(landmarks[60:68,0],landmarks[60:68,1],marker='o',markersize=6,linestyle='-',color='w',lw=2)
     plt.axis('off')
-    plt.show(block=True)
+    plt.show(block=False)
 
 times = {}
 def tic(timename):
