@@ -9,6 +9,7 @@ import cv2
 import time
 
 from torch.autograd import Variable
+import matplotlib.pyplot as plt
 
 
 def _gaussian(
@@ -326,12 +327,81 @@ def landmark_diff(lm1, lm2):
                                2) + math.pow((float(lm1[i][1]) - float(lm2[i][1])), 2))
     return sum / norm
 
+def rotate(origin, point, angle):
+    """
+    Rotate a point counterclockwise by a given angle around a given origin.
+
+    The angle should be given in degrees.
+    modified for origin at top left (increasing y proceeding downward)
+    """
+    angle = angle * math.pi / 180.
+    ox, oy = origin
+    px, py = point
+    if px is -1 and py is -1:
+        return px, py
+    # flip y axis
+    ox = float(ox)
+    oy = float(oy)
+    oy = -oy
+    py = -py
+
+    s = math.sin(angle)
+    c = math.cos(angle)
+
+    # translate point back to origin:
+    px -= ox
+    py -= oy
+
+    # rotate point
+    xnew = px * c - py * s
+    ynew = px * s + py * c
+
+    # translate point back:
+    qx = xnew + ox
+    qy = ynew + oy
+    qy = -qy
+    return qx, qy
+
+# https://scipython.com/book/chapter-6-numpy/examples/creating-a-rotation-matrix-in-numpy/
+# 3D version: https://stackoverflow.com/a/6802723/2680660
+def transformation_matrix(rotation_angle):
+    theta = np.radians(rotation_angle)
+    c, s = np.cos(theta), np.sin(theta)
+    mat = np.matrix('{} {} 0; {} {} 0'.format(c, -s, s, c), np.float32)
+    return torch.from_numpy(mat)
 
 def write2file(image, filename):
     cv2.imwrite(filename+".png", image)
     np.savetxt(filename+"_0.txt", image[...,0], fmt='%i')
     np.savetxt(filename+"_1.txt", image[...,1], fmt='%i')
     np.savetxt(filename+"_2.txt", image[...,2], fmt='%i')
+
+def display_landmarks(image, landmarks, gt_landmarks, fig_title):
+    plt.figure(fig_title)
+    plt.clf()
+    plt.imshow(image)
+    if len(gt_landmarks):
+        plt.plot(gt_landmarks[0:17,0] ,gt_landmarks[0:17,1], marker='o',markersize=4,linestyle='-',color='b',lw=1)
+        plt.plot(gt_landmarks[17:22,0],gt_landmarks[17:22,1],marker='o',markersize=4,linestyle='-',color='b',lw=1)
+        plt.plot(gt_landmarks[22:27,0],gt_landmarks[22:27,1],marker='o',markersize=4,linestyle='-',color='b',lw=1)
+        plt.plot(gt_landmarks[27:31,0],gt_landmarks[27:31,1],marker='o',markersize=4,linestyle='-',color='b',lw=1)
+        plt.plot(gt_landmarks[31:36,0],gt_landmarks[31:36,1],marker='o',markersize=4,linestyle='-',color='b',lw=1)
+        plt.plot(gt_landmarks[36:42,0],gt_landmarks[36:42,1],marker='o',markersize=4,linestyle='-',color='b',lw=1)
+        plt.plot(gt_landmarks[42:48,0],gt_landmarks[42:48,1],marker='o',markersize=4,linestyle='-',color='b',lw=1)
+        plt.plot(gt_landmarks[48:60,0],gt_landmarks[48:60,1],marker='o',markersize=4,linestyle='-',color='b',lw=1)
+        plt.plot(gt_landmarks[60:68,0],gt_landmarks[60:68,1],marker='o',markersize=4,linestyle='-',color='b',lw=1)
+    if len(landmarks):
+        plt.plot(landmarks[0:17,0],landmarks[0:17,1],marker='o',markersize=6,linestyle='-',color='w',lw=2)
+        plt.plot(landmarks[17:22,0],landmarks[17:22,1],marker='o',markersize=6,linestyle='-',color='w',lw=2)
+        plt.plot(landmarks[22:27,0],landmarks[22:27,1],marker='o',markersize=6,linestyle='-',color='w',lw=2)
+        plt.plot(landmarks[27:31,0],landmarks[27:31,1],marker='o',markersize=6,linestyle='-',color='w',lw=2)
+        plt.plot(landmarks[31:36,0],landmarks[31:36,1],marker='o',markersize=6,linestyle='-',color='w',lw=2)
+        plt.plot(landmarks[36:42,0],landmarks[36:42,1],marker='o',markersize=6,linestyle='-',color='w',lw=2)
+        plt.plot(landmarks[42:48,0],landmarks[42:48,1],marker='o',markersize=6,linestyle='-',color='w',lw=2)
+        plt.plot(landmarks[48:60,0],landmarks[48:60,1],marker='o',markersize=6,linestyle='-',color='w',lw=2)
+        plt.plot(landmarks[60:68,0],landmarks[60:68,1],marker='o',markersize=6,linestyle='-',color='w',lw=2)
+    plt.axis('off')
+    plt.show(block=True)
 
 times = {}
 def tic(timename):

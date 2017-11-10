@@ -22,6 +22,8 @@ import torch.optim as optim
 from torch.optim import lr_scheduler
 from torch.utils.data import DataLoader
 from torchvision import transforms
+from scipy import ndimage
+import random
 
 class LandmarksType(Enum):
     _2D = 1
@@ -63,14 +65,13 @@ class FaceAlignment:
 
     def __init__(self, landmarks_type, network_size=NetworkSize.LARGE,
                  enable_cuda=True, enable_cudnn=True, flip_input=False,
-                 use_cnn_face_detector=False, tranformer_from_eye=False):
+                 use_cnn_face_detector=False):
         self.enable_cuda = enable_cuda
         self.use_cnn_face_detector = use_cnn_face_detector
         self.use_face_normalization = False
         self.use_face_normalization_from_caffe = False
         self.flip_input = flip_input
         self.landmarks_type = landmarks_type
-        self.tranformer_from_eye = tranformer_from_eye
         base_path = os.path.join(appdata_dir('face_alignment'), "data")
 
         if not os.path.exists(base_path):
@@ -150,7 +151,7 @@ class FaceAlignment:
                 self.depth_prediciton_net.cuda()
             self.depth_prediciton_net.eval()
 
-        self.face_normalization_net = STN(self.tranformer_from_eye)
+        self.face_normalization_net = STN()
         if self.enable_cuda:
             self.face_normalization_net.cuda()
 
@@ -206,20 +207,6 @@ class FaceAlignment:
                 d = detected_faces[0]
                 np.savetxt(os.path.splitext(image_name)[0] + '.rct_dlib_cpu',
                            (d.left(), d.top(), d.right(), d.bottom()), fmt='%d', newline=' ')
-
-    def make_rotated_images(self, path_src, path_tag):
-
-        types = ('*.jpg', '*.png')
-        images_list = []
-        for files in types:
-            images_list.extend(sorted(glob.glob(os.path.join(path_src, files))))
-
-        for image_name in images_list:
-            reverse_angle = 1.0
-            for angle in [5, 10, 15, 20, 25, 30]:
-                image = io.imread(image_name)
-
-
 
     def get_landmarks(self, input_image, type, all_faces=False):
         print(input_image, " ---")
@@ -285,9 +272,10 @@ class FaceAlignment:
             inp = Variable(inp, volatile=True)
 
             if self.use_face_normalization:
-                tic(input_image + " - face_normalization")
+                tic("face_normalization")
                 inp, _, theta = self.face_normalization_net(inp)
-                toc(input_image + " - face_normalization")
+                toc("face_normalization")
+                print("Theta: ", theta)
                 front_img = inp.data.cpu().numpy()
                 front_img = front_img[-1].transpose(1, 2, 0)
             elif self.use_face_normalization_from_caffe:
@@ -338,13 +326,13 @@ class FaceAlignment:
                     heatmaps).view(1, 68, 256, 256).float()
                 if self.enable_cuda:
                     heatmaps = heatmaps.cuda()
-                # tic(input_image + " - depth_prediction")
+                # tic("depth_prediction")
                 depth_pred = self.depth_prediciton_net(
                     Variable(
                         torch.cat(
                             (inp.data, heatmaps), 1), volatile=True)).data.cpu().view(
                     68, 1)
-                # toc(input_image + " - depth_prediction")
+                # toc("depth_prediction")
                 pts_img = torch.cat(
                     (pts_img, depth_pred * (1.0 / (256.0 / (200.0 * scale)))), 1)
 
@@ -354,7 +342,7 @@ class FaceAlignment:
             frontal_images.append(front_img)
 
         avg_error = running_error / images_so_far
-        print("MSE: {:4f}".format(avg_error))
+        print("MSE: {:.4f}".format(avg_error))
         # toc("total", fps=True)
         return landmarks, gt_landmarks, proposal_images, frontal_images, avg_error
 
@@ -373,119 +361,16 @@ class FaceAlignment:
         for preds in predictions:
             running_error += preds[1][4]
         avg_error = running_error / len(predictions)
-        print("Average MSE: {:4f}".format(avg_error))
+        print("Average MSE: {:.4f}".format(avg_error))
         return predictions
 
-    def train_STN_standalone(self, path, type, save_state_file):
-        image_datasets = {x: FaceLandmarksDataset(path, type,
-                                                  transforms=transforms.Compose([
-                                                      ToTensor()
-                                                  ]))
-                          for x in ['train', 'val']}
-        dataloaders = {x: DataLoader(image_datasets[x], shuffle=True, num_workers=4)
-                       for x in ['train', 'val']}
-        dataset_sizes = {x: len(image_datasets[x]) for x in ['train', 'val']}
+    def train_STN(self, path, type, save_state_file):
 
-        criterion = nn.MSELoss()
-        optimizer = optim.SGD(self.face_normalization_net.parameters(), lr=0.000001, momentum=0.9)
-        scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=6, gamma=0.1)
-
-        num_epochs = 20
-
-        since = time.time()
-
-        best_model_wts = self.face_normalization_net.state_dict()
-        best_loss = 999.99
-
-        for epoch in range(num_epochs):
-            print('Epoch {}/{}'.format(epoch + 1, num_epochs))
-            print('-' * 10)
-
-            # Each epoch has a training and validation phase
-            for phase in ['train', 'val']:
-                if phase == 'train':
-                    scheduler.step()
-                    self.face_normalization_net.train(True)  # Set model to training mode
-                else:
-                    self.face_normalization_net.train(False)  # Set model to evaluate mode
-
-                running_loss = 0.0
-
-                # Iterate over data.
-                for i, data in enumerate(dataloaders[phase]):
-                    # get the inputs
-                    data_image, data_landmarks = data['image'][-1], data['landmarks'][-1] # Assume one face per image
-
-                    image = data_image.cpu().numpy().transpose((1, 2, 0))
-                    d = data_landmarks[0:2].view(4)
-                    landmarks = data_landmarks[2::]
-
-                    center = torch.FloatTensor(
-                        [d[2] - (d[2] - d[0]) / 2.0, d[3] -
-                         (d[3] - d[1]) / 2.0])
-                    center[1] = center[1] - (d[3] - d[1]) * 0.1
-                    scale = (d[2] - d[0] + d[3] - d[1]) / 200.0
-                    input = crop(image, center, scale, resolution=480.0)
-                    input = torch.from_numpy(input.transpose((2, 0, 1))).float().div(255.0).unsqueeze_(0)
-
-                    ### Rotate the image and landmarks
-                    rigged_points3 = Variable(torch.ones(landmarks.shape[0], landmarks.shape[1] + 1)).float().cuda()
-                    rigged_points3[:,0:2] = landmarks
-
-                    # wrap them in Variable
-                    if self.enable_cuda:
-                        input, landmarks = input.cuda(), landmarks.cuda()
-                    input, landmarks = Variable(input), Variable(landmarks)
-
-                    # zero the parameter gradients
-                    optimizer.zero_grad()
-
-                    # forward
-                    _, _, theta = self.face_normalization_net(input)
-
-                    theta3 = Variable(torch.eye(3)).cuda()
-                    theta3[0:2] = theta
-                    output3 = torch.matmul(rigged_points3, theta3)
-                    output = output3[:,0:2]
-
-                    loss = criterion(output, landmarks)
-
-                    # backward + optimize only if in training phase
-                    if phase == 'train':
-                        loss.backward()
-                        optimizer.step()
-
-                    # statistics
-                    running_loss += loss.data[0]
-
-                epoch_loss = running_loss / dataset_sizes[phase]
-
-                print('{} Loss: {:.4f}'.format(
-                    phase, epoch_loss))
-
-                # deep copy the model
-                if phase == 'val' and (epoch_loss < best_loss or best_loss == 999.99):
-                    best_loss = epoch_loss
-                    best_model_wts = self.face_normalization_net.state_dict()
-
-            print()
-
-        time_elapsed = time.time() - since
-        print('Training complete in {:.0f}m {:.0f}s'.format(
-            time_elapsed // 60, time_elapsed % 60))
-        print('Best val Loss: {:4f}'.format(best_loss))
-
-        # load best model weights
-        self.face_normalization_net.load_state_dict(best_model_wts)
-
-        # save the weights to a file
-        torch.save(self.face_normalization_net.state_dict(), save_state_file)
-
-
-    def train_STN_with_FAN(self, path, type, save_state_file):
-
-        use_Variable_grad = False
-        use_FAN_training = True
+        use_Variable_grad = True
+        use_manual_rotation = True
+        use_FAN_update = False
+        loss_theta = True
+        loss_image = True
 
         image_datasets = {x: FaceLandmarksDataset(path, type,
                                                   transforms=transforms.Compose([
@@ -500,23 +385,25 @@ class FaceAlignment:
         # criterion = nn.CrossEntropyLoss()
 
         # Observe that all parameters are being optimized
-        if use_FAN_training:
+        if use_FAN_update:
             self.face_alignment_net.train()
             model_params = list(self.face_normalization_net.parameters()) + list(self.face_alignment_net.parameters())
-            optimizer = optim.SGD(model_params, lr=0.01, momentum=0.9)
+            optimizer = optim.SGD(model_params, lr=0.01, momentum=0.9, weight_decay=0.1)
         else:
             # Freeze FAN
             for param in self.face_alignment_net.parameters():
                 param.requires_grad = False
-            optimizer = optim.SGD(self.face_normalization_net.parameters(), lr=0.02, momentum=0.9)
-        # optimizer = optim.SGD(self.face_normalization_net.parameters(), lr=0.01, momentum=0.9)
-        # optimizer = optim.RMSprop(self.face_normalization_net.parameters(), lr=0.00025, eps=1.e-8)
-        # optimizer = optim.Adam(self.face_normalization_net.parameters(), lr=0.001)
+            # optimizer = optim.RMSprop(self.face_normalization_net.parameters(), lr=0.00025, weight_decay=0.9)
+            optimizer = optim.SGD(self.face_normalization_net.parameters(), lr=0.000001, momentum=0.9, weight_decay=0.4)
+            # optimizer = optim.SGD(self.face_normalization_net.parameters(), lr=0.01, momentum=0.9)
+            # optimizer = optim.RMSprop(self.face_normalization_net.parameters(), lr=0.00025, eps=1.e-8)
+            # optimizer = optim.Adam(self.face_normalization_net.parameters(), lr=0.001)
 
         # Decay LR by a factor of 0.1 every 7 epochs
-        scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=4, gamma=0.1)
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=1000, verbose=True)
+        # scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=3, gamma=0.1)
 
-        num_epochs = 30
+        num_epochs = 15
 
         ##########
         since = time.time()
@@ -531,7 +418,7 @@ class FaceAlignment:
             # Each epoch has a training and validation phase
             for phase in ['train', 'val']:
                 if phase == 'train':
-                    scheduler.step()
+                    # scheduler.step()
                     self.face_normalization_net.train(True)  # Set model to training mode
                 else:
                     self.face_normalization_net.train(False)  # Set model to evaluate mode
@@ -539,9 +426,9 @@ class FaceAlignment:
                 running_loss = 0.0
 
                 # Iterate over data.
-                for i, data in enumerate(dataloaders[phase]):
+                for j, data in enumerate(dataloaders[phase]):
                     # get the inputs
-                    data_image, data_landmarks = data['image'][-1], data['landmarks'][-1] # Assume one face per image
+                    data_image, data_landmarks = data['image'][-1], data['landmarks'][-1]    # Assume one face per image
 
                     image = data_image.cpu().numpy().transpose((1, 2, 0))
                     d = data_landmarks[0:2].view(4)
@@ -552,14 +439,69 @@ class FaceAlignment:
                          (d[3] - d[1]) / 2.0])
                     center[1] = center[1] - (d[3] - d[1]) * 0.1
                     scale = (d[2] - d[0] + d[3] - d[1]) / 200.0
+
+                    input_org = crop(image, center, scale)
+                    rotation_angle = 0.
+                    if use_manual_rotation:
+                        input_org = crop(image, center, scale)
+
+                        maximum_angle = 40.
+                        minimum_angle = 5.
+                        rotation_angle = (random.random() - 0.5) * 2 * maximum_angle
+                        if rotation_angle > 0:
+                            rotation_angle += minimum_angle
+                        else:
+                            rotation_angle -= minimum_angle
+                        manual_theta = transformation_matrix(rotation_angle)
+
+                        image_rot = ndimage.rotate(image, rotation_angle, reshape=True)
+                        center = rotate((image.shape[1] / 2.0, image.shape[0] / 2.0), center, rotation_angle)
+                        center = (center[0] + (image_rot.shape[1] - image.shape[1]) / 2.0, center[1] + (image_rot.shape[0] - image.shape[0]) / 2.0)
+                        image = image_rot
+
+                        landmarks
+                    else:
+                        manual_theta = transformation_matrix(0)
+
                     input = crop(image, center, scale, resolution=480.0)
+
+                    if loss_image:
+                        input_rot = input
+
                     input = torch.from_numpy(input.transpose((2, 0, 1))).float().div(255.0).unsqueeze_(0)
 
-                    if use_Variable_grad:
+                    # if use_manual_rotation:
+                    #     maximum_angle = 30.
+                    #     rotation_angle = (random.random() - 0.5) * 2 * maximum_angle
+                    #     height = image.shape[0]
+                    #     width = image.shape[1]
+                    #
+                    #     landmarks_org = landmarks
+                    #
+                    #     # TODO: vectorize this
+                    #     # landmarks_ = landmarks.numpy()
+                    #     # for i in range(landmarks_.shape[0]):
+                    #     #     landmarks_[i] = rotate((width / 2.0, height / 2.0), landmarks_[i], rotation_angle)
+                    #     # landmarks = torch.from_numpy(landmarks_)
+                    #
+                    #     manual_theta = transformation_matrix(rotation_angle)
+                    #     center = rotate((width / 2.0, height / 2.0), center, rotation_angle)
+                    #     landmarks_ = landmarks - center
+                    #     landmarks_ = torch.matmul(landmarks_, manual_theta)[:,:2]
+                    #     landmarks = landmarks_ + center
+                    #     image = ndimage.rotate(image, rotation_angle, reshape=False)
+                    # else:
+                    #     manual_theta = transformation_matrix(0)
+                    #
+                    # if j == 2:
+                    #     display_landmarks(image, landmarks.numpy(), [], "Ground truth")
+                    #     display_landmarks(input, [], [], "Cropped")
+
+                    if use_Variable_grad or use_manual_rotation:
                         # wrap them in Variable
                         if self.enable_cuda:
-                            input, landmarks = input.cuda(), landmarks.cuda()
-                        input, landmarks = Variable(input), Variable(landmarks)
+                            input, landmarks, manual_theta = input.cuda(), landmarks.cuda(), manual_theta.cuda()
+                        input, landmarks, manual_theta = Variable(input), Variable(landmarks, requires_grad=False), Variable(manual_theta, requires_grad=False)
                     else:
                         # create heat maps from ground truth landmarks
                         nFeatures = len(landmarks)
@@ -585,45 +527,101 @@ class FaceAlignment:
                     # forward
                     frontal_img, _, theta = self.face_normalization_net(input)
 
-                    hm = self.face_alignment_net(frontal_img)[-1]
-                    if self.flip_input:
-                        hm += flip(self.face_alignment_net(Variable(flip(frontal_img)))[-1], is_label=True)
+                    if loss_image:
+                        # input_org_Var = Variable(torch.from_numpy(input_org).float().div(255.0).cuda(), requires_grad=False)
+                        input_org_Var = Variable(torch.from_numpy(input_org).float().cuda(), requires_grad=False)
 
-                    if use_Variable_grad:
-                        theta_inv = Variable(torch.eye(3))
-                        theta_inv[0:2] = theta[0]
-                        theta_inv = torch.inverse(theta_inv)[0:2].unsqueeze(0).cuda()
-                        grid = nn.functional.affine_grid(theta_inv, torch.Size([1, 68, 64, 64]))
-                        hm = nn.functional.grid_sample(hm, grid)
+                        # loss = criterion(frontal_img, input_org_Var)
+                        # loss = criterion(frontal_img[:, :, 64:192,64:192], input_org_Var[64:192,64:192])
+                        # loss = criterion(frontal_img[:,:,48:208,48:208], input_org_Var[48:208,48:208])
+                        loss = criterion(frontal_img[:, :, 48:208,48:208].mul(255.0), input_org_Var[48:208,48:208])
 
-                        pts, pts_img = get_preds_fromhm_Variable(hm, center, scale)
-                        pts, pts_img = pts.view(-1, 2) * 4, pts_img.view(-1, 2)
-                        loss = criterion(pts_img, landmarks)
+                        if j == 2:
+                            output_img = frontal_img.data.cpu().numpy()
+                            output_img = output_img[-1].transpose(1, 2, 0)
 
+                            fig = plt.figure(figsize=(9,3), tight_layout=True)
+                            ax = fig.add_subplot(1, 4, 1)
+                            ax.axis('off')
+                            ax.imshow(image)
+                            ax = fig.add_subplot(1, 4, 2)
+                            ax.axis('off')
+                            ax.imshow(input_org)
+                            ax = fig.add_subplot(1, 4, 3)
+                            ax.axis('off')
+                            ax.title.set_text("Rot: {:.2f}".format(rotation_angle))
+                            ax.imshow(input_rot)
+                            ax = fig.add_subplot(1, 4, 4)
+                            ax.axis('off')
+                            theta_text = theta[0].data
+                            ax.title.set_text("{:.3f} {:.3f} {:.1f}\n{:.3f} {:.3f} {:.1f}".format(theta_text[0,0], theta_text[0,1], theta_text[0,2], theta_text[1,0], theta_text[1,1], theta_text[1,2]))
+                            ax.imshow(output_img)
+                            plt.show(block=False)
 
-                        # pts, pts_img = get_preds_fromhm_Variable(hm, center, scale)
-                        # pts, pts_img = pts.view(-1, 2) * 4, pts_img.view(-1, 2)
+                        # output = torch.matmul(landmarks, theta[0])[:,:2]
+                        # manual_output = torch.matmul(landmarks, manual_theta)[:,:2]
                         #
-                        # # grid = nn.functional.affine_grid(theta.data, torch.Size([1, 1, 68, 2]))
-                        # # landmarks_rot = nn.functional.grid_sample(landmarks.unsqueeze(0).unsqueeze(0), grid)
-                        # # loss = criterion(pts_img, landmarks_rot)
+                        # loss = criterion(output, manual_output)
                         #
-                        # theta_ = theta[0].data.t()
-                        # landmarks3 = torch.cat((landmarks.data, torch.ones(68,1)), dim=1)
-                        # landmarks_rot3 = torch.matmul(landmarks3, theta_)
-                        # landmarks_rot = landmarks_rot3[:, 0:2]
-                        # loss = criterion(pts_img, landmarks_rot)
-
+                        # landmarks_disp = output.data.cpu().numpy()
+                        # gt_landmarks_disp = landmarks_org.numpy()
                     else:
-                        loss = criterion(hm, reference_heatmaps)
+                        hm = self.face_alignment_net(frontal_img)[-1]
+                        if self.flip_input:
+                            hm += flip(self.face_alignment_net(Variable(flip(frontal_img)))[-1], is_label=True)
 
-                        # loss = None
-                        # for i in range(self.face_alignment_net.num_modules):
-                        #     moduleLoss = criterion(hm[i], reference_heatmaps[0])
-                        #     if loss is None:
-                        #         loss = moduleLoss
-                        #     else:
-                        #         loss += moduleLoss
+                        if use_Variable_grad:
+                            theta_inv = Variable(torch.eye(3))
+                            theta_inv[0:2] = theta[0]
+                            theta_inv = torch.inverse(theta_inv)[0:2].unsqueeze(0).cuda()
+                            grid = nn.functional.affine_grid(theta_inv, torch.Size([1, 68, 64, 64]))
+                            hm = nn.functional.grid_sample(hm, grid)
+
+                            pts, pts_img = get_preds_fromhm_Variable(hm, center, scale)
+                            pts, pts_img = pts.view(-1, 2) * 4, pts_img.view(-1, 2)
+
+                            loss = criterion(pts_img, landmarks)
+
+                            # pts, pts_img = get_preds_fromhm_Variable(hm, center, scale)
+                            # pts, pts_img = pts.view(-1, 2) * 4, pts_img.view(-1, 2)
+                            #
+                            # # grid = nn.functional.affine_grid(theta.data, torch.Size([1, 1, 68, 2]))
+                            # # landmarks_rot = nn.functional.grid_sample(landmarks.unsqueeze(0).unsqueeze(0), grid)
+                            # # loss = criterion(pts_img, landmarks_rot)
+                            #
+                            # theta_ = theta[0].data.t()
+                            # landmarks3 = torch.cat((landmarks.data, torch.ones(68,1)), dim=1)
+                            # landmarks_rot = torch.matmul(landmarks3, theta_)[:,:2]
+                            # loss = criterion(pts_img, landmarks_rot)
+
+                            landmarks_disp = pts_img.data.cpu().numpy()
+                            gt_landmarks_disp = landmarks.numpy()
+
+                        else:
+                            loss = criterion(hm, reference_heatmaps)
+
+                            # loss = None
+                            # for i in range(self.face_alignment_net.num_modules):
+                            #     moduleLoss = criterion(hm[i], reference_heatmaps[0])
+                            #     if loss is None:
+                            #         loss = moduleLoss
+                            #     else:
+                            #         loss += moduleLoss
+
+                            pts, pts_img = get_preds_fromhm(hm.data.cpu(), center, scale)
+                            pts, pts_img = pts.view(-1, 2) * 4, pts_img.view(-1, 2)
+                            landmarks_disp = pts_img.numpy()
+                            gt_landmarks_disp = landmarks.numpy()
+
+                    # if j == 2:
+                    #     display_landmarks(image, landmarks_disp, gt_landmarks_disp, "Results")
+
+                    if loss_theta:
+                        w_theta = 100.0
+                        # print("Theta: ", theta)
+                        # print("Manual_theta: ", manual_theta)
+                        loss += criterion(theta*w_theta, manual_theta*w_theta)
+                        # loss = criterion(theta, manual_theta)
 
                     # backward + optimize only if in training phase
                     if phase == 'train':
@@ -632,6 +630,9 @@ class FaceAlignment:
 
                     # statistics
                     running_loss += loss.data[0]
+
+                    if phase == 'val':
+                        scheduler.step(running_loss)
 
                 epoch_loss = running_loss / dataset_sizes[phase]
 
@@ -647,7 +648,7 @@ class FaceAlignment:
         time_elapsed = time.time() - since
         print('Training complete in {:.0f}m {:.0f}s'.format(
             time_elapsed // 60, time_elapsed % 60))
-        print('Best val Loss: {:4f}'.format(best_loss))
+        print('Best val Loss: {:.4f}'.format(best_loss))
 
         # load best model weights
         self.face_normalization_net.load_state_dict(best_model_wts)

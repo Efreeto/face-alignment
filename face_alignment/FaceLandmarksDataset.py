@@ -152,6 +152,8 @@ class FaceLandmarksDataset(Dataset):
             ground_truth = np.loadtxt(file_name + '.pts')
         elif self.type == 2:  # 300W, lfpw
             ground_truth = np.loadtxt(file_name + '.pts', skiprows=3, comments='}')
+        elif self.type == 3:  # FEI
+            ground_truth = np.ones((68,2))
 
         bbox = np.loadtxt(file_name + '.rct_dlib_cpu').reshape(2,2)
 

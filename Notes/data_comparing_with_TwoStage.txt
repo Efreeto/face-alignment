@@ -1,0 +1,18 @@
+
+Aaron's dlib CPU: rectangle(67,80,175,187)
+
+Aaron's dlib GPU: rectangle(78,76,160,158) <-
+
+
+For 250x250x3 Aaron image,
+C++: [187497]=182 [187498]=162 [187499]=151
+Py: [249][249][0]=151 [249][249][1]=162 [249][249][2]=182
+
+Then
+Py: scaled crop around center of bbox to 250,250
+C++: crop bbox out and resize to 448, 448
+
+
+For 448x448x3 Aaron image,
+C++: [602109]=49 [602110]=48 [602111]=50
+Py: [447][447][0]=50 [249][249][1]=48 [249][249][2]=49

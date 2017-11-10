@@ -1,0 +1,87 @@
+process_dataset
+
+=Without STN
+8W
+Average MSE: 78.959670
+
+land110_F
+Average MSE: 12.049015
+
+
+=With STFAN (STFAN_land110_F.pth)
+8W
+Average MSE: 75.722578
+
+land110_F
+Average MSE: 11.743507
+
+
+=With STFAN (STFAN_land110_F_Var.pth.pth)
+Average MSE: 16.521609
+
+
+=With Caffe STN (1, -1, -1, 1)
+8W
+Avg. error rate: 85.278593
+
+land110_F
+Avg. error rate: 12.069347
+
+=Without STN
+10W
+Average MSE: 42.401506
+
+
+Average MSE: 24.486460
+
+
+        use_Variable_grad = True
+        use_STN_standalone = True
+        use_FAN_update = True
+        use_manual_rotation = True
+        use_double_loss = True
+
+lfpw/testset
+Average MSE: 26.531967
+
+
+=standalone train with lfpw/testset
+10W
+Average MSE: 35.294735
+Average MSE: 37.701667 (lfpw_test_11-8.pth)
+
+
+image = torch.ones(1,3,4,4).float()
+image[0,0,2,0] = 3
+image[0,1,2,1] = 4
+
+theta = Variable(torch.FloatTensor([[1, 0, 0.2], [0, 1, 0]]).unsqueeze(0))
+grid = F.affine_grid(theta, torch.Size([1, 3, 4, 4]))
+image_out = F.grid_sample(image, grid)
+
+theta = Variable(torch.FloatTensor([[1, 0, 0.2], [0, 1, 0]]).unsqueeze(0))
+Move left
+
+theta = Variable(torch.FloatTensor([[0.9, 0, 0], [0, 0.9, 0]]).unsqueeze(0))
+Zoom in
+
+theta = Variable(torch.FloatTensor([[1.1, 0, 0], [0, 1.1, 0]]).unsqueeze(0))
+Zoom out
+(0 ,0 ,.,.) = 
+  0.7225  0.8500  0.8500  0.7225
+  0.8500  1.0000  1.0000  0.8500
+  2.4650  1.0950  1.0000  0.8500
+  0.7225  0.8500  0.8500  0.7225
+
+(0 ,1 ,.,.) = 
+  0.7225  0.8500  0.8500  0.7225
+  0.8500  1.0000  1.0000  0.8500
+  0.8500  3.7075  1.0000  0.8500
+  0.7225  0.8500  0.8500  0.7225
+
+(0 ,2 ,.,.) = 
+  0.7225  0.8500  0.8500  0.7225
+  0.8500  1.0000  1.0000  0.8500
+  0.8500  1.0000  1.0000  0.8500
+  0.7225  0.8500  0.8500  0.7225
+
