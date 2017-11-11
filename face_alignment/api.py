@@ -433,9 +433,10 @@ class FaceAlignment:
                     data_image, data_landmarks = data['image'][-1], data['landmarks'][-1]    # Batch size of 1
 
                     image = data_image.cpu().numpy().transpose((1, 2, 0))
-                    image_org = image
                     d = data_landmarks[0:2].view(4)
                     landmarks = data_landmarks[2:]
+                    if self.enable_cuda:
+                        landmarks = landmarks.cuda()
 
                     center = torch.FloatTensor(
                         [d[2] - (d[2] - d[0]) / 2.0, d[3] -
@@ -446,8 +447,6 @@ class FaceAlignment:
                     input_org = crop(image, center, scale)
 
                     if use_manual_rotation:
-                        origin_org = torch.Tensor((image.shape[1] / 2.0, image.shape[0] / 2.0))
-
                         maximum_angle = 40.
                         minimum_angle = 5.
                         rotation_angle = (random.random() - 0.5) * 2 * maximum_angle
@@ -458,27 +457,29 @@ class FaceAlignment:
 
                         manual_theta = transformation_matrix(-rotation_angle)
                         manual_theta_inv = transformation_matrix(rotation_angle)
+                        if self.enable_cuda:
+                            manual_theta, manual_theta_inv = manual_theta.cuda(), manual_theta_inv.cuda()
 
                         image_rot = ndimage.rotate(image, rotation_angle, reshape=True)
-                        origin_rot = ((image_rot.shape[1] / 2.0, image_rot.shape[0] / 2.0))
-
-                        # display_landmarks(image, landmarks.numpy(), [], "First")
-
-                        offset = torch.Tensor((origin_rot[0] - origin_org[0], origin_rot[1] - origin_org[1]))
+                        origin_org = torch.Tensor((image.shape[1] / 2.0, image.shape[0] / 2.0))
+                        origin_rot = torch.Tensor((image_rot.shape[1] / 2.0, image_rot.shape[0] / 2.0))
+                        if self.enable_cuda:
+                            origin_org, origin_rot = origin_org.cuda(), origin_rot.cuda()
 
                         center = torch.Tensor(rotate(origin_org, center, rotation_angle))
-                        center = center + offset    # reshape=True
+                        if self.enable_cuda:
+                            center = center.cuda()
+                        center = center + origin_rot - origin_org    # reshape=True
 
                         input = crop(image_rot, center, scale, resolution=480.0)
                         input_rot = input
 
                         if loss_landmarks:
-                            landmarks_org = landmarks
-                            landmarks_ = landmarks - origin_org
-                            landmarks_ = torch.matmul(landmarks_, manual_theta_inv)[:,:2]
-                            landmarks = landmarks_ + origin_rot
-
-                            # display_landmarks(image, landmarks.numpy(), [], "Interim")
+                            landmarks_rot = landmarks - origin_org
+                            landmarks_rot = torch.matmul(landmarks_rot, manual_theta_inv)[:,:2]
+                            landmarks_rot = landmarks_rot + origin_rot
+                            # display_landmarks(image, landmarks.cpu().numpy(), [], "Original")
+                            display_landmarks(image_rot, landmarks_rot.cpu().numpy(), [], "Manually Rotated")
 
                     else:
                         manual_theta = transformation_matrix(0)
@@ -486,11 +487,11 @@ class FaceAlignment:
                         input = crop(image, center, scale, resolution=480.0)
 
                     input = torch.from_numpy(input.transpose((2, 0, 1))).float().div(255.0).unsqueeze_(0)
+                    if self.enable_cuda:
+                        input = input.cuda()
 
                     if use_Variable_grad or use_manual_rotation:
                         # wrap them in Variable
-                        if self.enable_cuda:
-                            input, landmarks, manual_theta = input.cuda(), landmarks.cuda(), manual_theta.cuda()
                         input, landmarks, manual_theta = Variable(input), Variable(landmarks, requires_grad=False), Variable(manual_theta, requires_grad=False)
                     else:
                         # create heat maps from ground truth landmarks
@@ -508,8 +509,8 @@ class FaceAlignment:
 
                         # wrap them in Variable
                         if self.enable_cuda:
-                            input, reference_heatmaps = input.cuda(), reference_heatmaps.cuda()
-                        input, reference_heatmaps = Variable(input), Variable(reference_heatmaps)
+                            reference_heatmaps = reference_heatmaps.cuda()
+                        reference_heatmaps = Variable(reference_heatmaps)
 
                     # zero the parameter gradients
                     optimizer.zero_grad()
@@ -573,9 +574,15 @@ class FaceAlignment:
                             gt_landmarks_disp = landmarks.numpy()
 
                     if loss_landmarks:
-                        landmarks_Var_ = Variable(landmarks_org - origin_org, requires_grad=False).cuda()
-                        landmarks_ = torch.matmul(landmarks_Var_, theta_inv[0])[:, :2]
-                        output = landmarks_ + Variable(origin_rot, requires_grad=False).cuda()
+                        # landmarks_Var_ = Variable(landmarks_org - origin_org, requires_grad=False).cuda()
+                        # landmarks_ = torch.matmul(landmarks_Var_, theta_inv[0])[:, :2]
+                        # output = landmarks_ + Variable(origin_rot, requires_grad=False).cuda()
+                        theta_inv = Variable(torch.eye(3)).cuda()
+                        theta_inv[0:2] = theta[0]
+                        theta_inv = torch.inverse(theta_inv)[0:2].cuda()
+                        output = torch.matmul(Variable(landmarks_rot, requires_grad=False), theta_inv)[:,:2]
+                        if self.enable_cuda:
+                            output = output.cuda()
 
                         loss = criterion(output, landmarks)
 
@@ -583,15 +590,9 @@ class FaceAlignment:
                             landmarks_disp = output.data.cpu().numpy()
                             gt_landmarks_disp = landmarks.data.cpu().numpy()
                             display_landmarks(image, landmarks_disp, gt_landmarks_disp, "Results")
-                            landmarks_disp = output.data.cpu().numpy()
-                            gt_landmarks_disp = landmarks_org
-                            display_landmarks(image_org, landmarks_disp, gt_landmarks_disp, "Results_org")
 
                     if loss_theta:
                         w_theta = 100.0
-                        if j == 2:
-                            print("Theta: ", theta)
-                            print("Manual_theta: ", manual_theta)
                         loss = criterion(theta*w_theta, manual_theta*w_theta)
 
                     if j == 2:
@@ -608,14 +609,16 @@ class FaceAlignment:
                         if use_manual_rotation:
                             ax = fig.add_subplot(1, 4, 3)
                             ax.axis('off')
-                            ax.title.set_text("Rot: {:.2f}".format(rotation_angle))
+                            manual_theta_text = manual_theta.data
+                            ax.title.set_text("Rot: {:.2f}\n{:.3f} {:.3f} {:.1f}\n{:.3f} {:.3f} {:.1f}".format(rotation_angle,
+                                                               manual_theta_text[0,0], manual_theta_text[0,1], manual_theta_text[0,2],
+                                                               manual_theta_text[1,0], manual_theta_text[1,1], manual_theta_text[1,2]))
                             ax.imshow(input_rot)
                         ax = fig.add_subplot(1, 4, 4)
                         ax.axis('off')
                         theta_text = theta[0].data
                         ax.title.set_text(
-                            "{:.3f} {:.3f} {:.1f}\n{:.3f} {:.3f} {:.1f}".format(theta_text[0, 0], theta_text[0, 1],
-                                                                                theta_text[0, 2], theta_text[1, 0],
+                            "{:.3f} {:.3f} {:.1f}\n{:.3f} {:.3f} {:.1f}".format(theta_text[0, 0], theta_text[0, 1], theta_text[0, 2], theta_text[1, 0],
                                                                                 theta_text[1, 1], theta_text[1, 2]))
                         ax.imshow(output_img)
                         plt.show(block=False)
