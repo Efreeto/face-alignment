@@ -104,26 +104,23 @@ def transform_Variable(point, center, scale, resolution, invert=False):
     return new_point.int()
 
 
-def center_scale_from_landmark(landmarks):
-    iterable = landmarks.transpose(0, 1)
-    minx = iterable[0].min()
-    miny = iterable[1].min()
-    maxx = iterable[0].max()
-    maxy = iterable[1].max()
-    center = torch.FloatTensor([maxx - (maxx - minx) / 2, maxy - (maxy - miny) / 2])
-    scale = (maxx - minx + maxy - miny) / 190  # --center and scale
+
+def center_scale_from_bbox(bbox):
+    minx = bbox[0]
+    miny = bbox[1]
+    maxx = bbox[2]
+    maxy = bbox[3]
+    center = torch.FloatTensor([maxx - (maxx - minx) / 2.0, maxy - (maxy - miny) / 2.0])
+    scale = (maxx - minx + maxy - miny) / 190.0
     return center, scale
 
 
-def bounding_box(iterable):
-    minx = iterable[0].min()
-    miny = iterable[1].min()
-    maxx = iterable[0].max()
-    maxy = iterable[1].max()
-    # mins = torch.min(iterable, 1).view(2)
-    # maxs = torch.max(iterable, 1).view(2)
-    center = torch.FloatTensor([maxx - (maxx - minx) / 2, maxy - (maxy - miny) / 2])
-    return center, (maxx - minx + maxy - miny) / 190  # --center and scale
+def bounding_box(landmarks):
+    minx = landmarks[:,0].min()
+    miny = landmarks[:,1].min()
+    maxx = landmarks[:,0].max()
+    maxy = landmarks[:,1].max()
+    return (minx, miny, maxx, maxy)
 
 
 def crop(image, center, scale, resolution=256.0):
@@ -368,7 +365,7 @@ def transformation_matrix(rotation_angle):
     theta = np.radians(rotation_angle)
     c, s = np.cos(theta), np.sin(theta)
     mat = np.matrix('{} {} 0; {} {} 0'.format(c, -s, s, c), np.float32)
-    return torch.from_numpy(mat)
+    return mat
 
 def write2file(image, filename):
     cv2.imwrite(filename+".png", image)

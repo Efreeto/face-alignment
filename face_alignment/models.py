@@ -281,6 +281,8 @@ class STN(nn.Module):
         self.base_transl = Variable(torch.zeros(2,1)).unsqueeze(0)
 
     def forward(self, inp):
+        batch_size = inp.size(0)
+
         x = self.downsample(inp)
         x = self.net1_conv1(x)
         x = self.net1_PReLU(x)
@@ -300,15 +302,16 @@ class STN(nn.Module):
         x = self.net1_68point(x)
         landmarks = self.net1_PReLU(x)
         theta = self.loc_reg_(landmarks)
-        theta = theta.view(1,2,2)
+        theta = theta.view(batch_size,2,2)
         # theta = Variable(torch.Tensor([[1, 0, 0],[0, 1, 0]]).cuda().view(1, 2, 3).repeat(inp.size(0), 1, 1), requires_grad=True) # identity transform matrix
 
         if theta.is_cuda:
             self.base_theta = self.base_theta.cuda()
             self.base_transl = self.base_transl.cuda()
+        base_transl = self.base_transl.repeat(batch_size,1,1)
         theta += self.base_theta
-        theta = torch.cat((theta, self.base_transl), dim=2)
+        theta = torch.cat((theta, base_transl), dim=2)
 
-        grid = F.affine_grid(theta, torch.Size([1, 3, 256, 256]))   # Prepare the transfomer grid with (256, 256) size that FAN expects, w.r.t theta
+        grid = F.affine_grid(theta, torch.Size([batch_size, 3, 256, 256]))   # Prepare the transfomer grid with (256, 256) size that FAN expects, w.r.t theta
         outp = F.grid_sample(inp, grid)                             # "Rotate" the image by applying the grid
         return outp, landmarks, theta
