@@ -2,7 +2,8 @@
 
 from __future__ import print_function, division
 
-import torch
+import argparse
+
 import torch.nn as nn
 import torch.optim as optim
 from torch.optim import lr_scheduler
@@ -11,7 +12,7 @@ from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms, utils
 # import matplotlib.pyplot as plt
 import time
-import os, glob
+import face_alignment.models
 from face_alignment.models import FAN, STN
 from face_alignment.FaceLandmarksDataset import *
 from shutil import copyfile
@@ -26,105 +27,111 @@ warnings.filterwarnings("ignore")
 USE_FAN = 1
 USE_STN = 0
 
+model_names = sorted(name for name in face_alignment.models.__dict__
+                     if name.islower() and not name.startswith("__")
+                     and callable(face_alignment.models.__dict__[name]))
 
-# TODO: move this to utils.py and connect similar points with lines like in detect_landmarks_in_image.py
-def show_landmarks(image, landmarks):
-    """Show image with landmarks"""
-    plt.imshow(image)
-    plt.scatter(landmarks[:, 0], landmarks[:, 1], s=10, marker='.', c='r')
-    plt.pause(0.001)  # pause a bit so that plots are updated
+# Training settings
+parser = argparse.ArgumentParser(description='Train FAN/STN model')
+parser.add_argument('data', metavar='DIR',
+                    help='path to dataset')
+parser.add_argument('--arch', '-a', metavar='ARCH', default='FAN',
+                    choices=model_names,
+                    help='model architecture: ' +
+                        ' | '.join(model_names) +
+                        ' (default: FAN)')
+parser.add_argument('-j', '--workers', default=8, type=int, metavar='N',
+                    help='number of data loading workers (default: 8)')
+parser.add_argument('--epochs', default=10, type=int, metavar='N',
+                    help='number of total epochs to run')
+parser.add_argument('--start-epoch', default=0, type=int, metavar='N',
+                    help='manual epoch number (useful on restarts)')
+parser.add_argument('-b', '--batch-size', default=10, type=int,
+                    metavar='N', help='mini-batch size (default: 10)')
+parser.add_argument('--lr', '--learning-rate', default=0.00025, type=float,
+                    metavar='LR', help='initial learning rate')
+parser.add_argument('--momentum', default=0.9, type=float, metavar='M',
+                    help='momentum')
+parser.add_argument('--weight-decay', '--wd', default=1e-4, type=float,
+                    metavar='W', help='weight decay (default: 1e-4)')
+parser.add_argument('--print-freq', '-p', default=10, type=int,
+                    metavar='N', help='print frequency (default: 10)')
+parser.add_argument('--resume', dest='resume', action='store_true',
+                    help= 'resume training from checkpoint file in logging directory')
+parser.add_argument('-e', '--evaluate', dest='evaluate', action='store_true',
+                    help='evaluate model on validation set')
+parser.add_argument('--loss-type', default='MSELoss', type=str, metavar='PATH',
+                    help='loss function (default: MSELoss)')
+parser.add_argument('--num-FAN-modules', default=4, type=int, metavar='PATH',
+                    help='number of FAN modules (default: 4)')
+parser.add_argument('-nl', '--num-landmarks', default=68, type=int, metavar='PATH',
+                    help='number of landmarks (default: 68)')
+parser.add_argument('-l', '--log-dir', default='train_log', type=str, metavar='PATH',
+                    help='logging directory (default: train_log)')
+parser.add_argument('-lp', '--log-progress', default=True, type=bool,
+                    help='log intermediate loss values to csv (default: True)')
 
-# Helper function to show a batch
-def show_landmarks_batch(sample_batched):
-    """Show image with landmarks for a batch of samples."""
-    images_batch, landmarks_batch = \
-            sample_batched['image'], sample_batched['landmarks']
-    batch_size = len(images_batch)
-    print(images_batch.shape, landmarks_batch.shape)
-    im_size = images_batch.size(2)
-    print(im_size)
-
-    grid = utils.make_grid(images_batch)
-    plt.imshow(grid.numpy().transpose((1, 2, 0)))
-
-    for i in range(batch_size):
-        plt.scatter(landmarks_batch[i, :, 0].numpy() + i * im_size,
-                    landmarks_batch[i, :, 1].numpy(),
-                    s=10, marker='.', c='r')
-
-        plt.title('Batch from dataloader')
-
-
-def plotLandmarks(calculated, expected, frame):
-    for i in range(68):
-        expectedPointColor = (0,0,255)
-        calculatedPointColor = (255,255,255)
-        # for landmark in landmarks:
-        cv2.circle(frame, (int(expected[0][i][0]), int(expected[0][i][1])),
-                   1, expectedPointColor, thickness=2)
-        cv2.circle(frame, (int(calculated[0][i][0]), int(calculated[0][i][1])),
-                   1, calculatedPointColor, thickness=2)
-        cv2.line(frame, (int(expected[0][i][0]), int(expected[0][i][1])), (int(calculated[0][i][0]), int(calculated[0][i][1])), (255,255,255),thickness=1,lineType=1)
-
-
-data_transforms = {
-     'trainset': transforms.Compose([
-         RandomHorizFlip(),
-         RandomRotation(),
-         LandmarkCrop(256),
-         CreateHeatmaps()
-     ]),
-
-    'testset': transforms.Compose([
-        LandmarkCrop(256)
-    ]),
-}
-
-image_datasets = {x: FaceLandmarksDataset(os.path.join('/home/cpaulse/lfpw', x),
-                                        transforms=data_transforms[x])
-                    for x in ['trainset', 'testset']}
-
-dataloaders = {x: DataLoader(image_datasets[x], shuffle=True, batch_size=10, num_workers=4)
-                  for x in ['trainset', 'testset']}
-
-dataset_sizes = {x: len(image_datasets[x]) for x in ['trainset', 'testset']}
 
 use_gpu = torch.cuda.is_available()
 
-"""
-for i_batch, sample_batched in enumerate(dataloaders['trainset']):
-    print(i_batch, sample_batched['image'].size(),
-          sample_batched['landmarks'].size())
+def weights_init(m):
+    """
+    taken from https://github.com/pytorch/examples/blob/62d5ca57af2c33c96c40010c115e5ff34136abb5/dcgan/main.py#L96
+    :param m: model
+    :return: model with randomized weights
+    """
+    classname = m.__class__.__name__
+    if classname.find('Conv2d') != -1:
+        m.weight.data.normal_(0.0, 0.02)
+    elif classname.find('BatchNorm') != -1:
+        m.weight.data.normal_(1.0, 0.02)
+        m.bias.data.fill_(0)
 
-    # observe 4th batch and stop.
-    if i_batch == 3:
-        plt.figure()
-        show_landmarks_batch(sample_batched)
-        plt.axis('off')
-        plt.ioff()
-        plt.show(block=True)
-        break
-"""
 
-def train_model(model, criterion, optimizer, scheduler, dataloaders, num_epochs=25, resume=None):
+def train_model(model,
+                criterion,
+                optimizer,
+                dataloaders,
+                scheduler=None,
+                num_epochs=25,
+                results_dir="train_log",
+                resume=True,
+                checkpoint_file=None,
+                log_progress=True):
+    """
+        Use the criterion, optimizer and Train/Validate data loaders to train the model
+    """
     since = time.time()
 
     best_model_wts = model.state_dict()
     best_loss = 999.99
     start_epoch = 1
 
+    if use_gpu:
+        model = model.cuda()
+
+    if not os.path.exists(results_dir):
+        os.makedirs(results_dir)
+
+    if log_progress:
+        progress_file = open(os.path.join(results_dir, "progress.csv"), "a")
+        progress_file.write('epoch, learning_rate, batch_size, trainset_loss, testset_loss, testset_max_loss\n')
+
     if resume:
-        if os.path.isfile(resume):
-            print("=> loading checkpoint '{}'".format(resume))
-            checkpoint = torch.load(resume)
+        if checkpoint_file is None:
+            checkpoint_file = "checkpoint.pth.tar"
+        resume_file = os.path.join(results_dir, checkpoint_file)
+        if os.path.isfile(resume_file):
+            print("=> loading checkpoint '{}'".format(resume_file))
+            checkpoint = torch.load(resume_file)
             start_epoch = checkpoint['epoch']
             best_loss = checkpoint['best_prec1']
             model.load_state_dict(checkpoint['state_dict'])
-            optimizer.load_state_dict(checkpoint['optimizer'])
+            # optimizer.load_state_dict(checkpoint['optimizer'])
             print("=> loaded checkpoint '{}' (epoch {})"
                   .format(resume, checkpoint['epoch']))
         else:
-            print("=> no checkpoint found at '{}'".format(resume))
+            print("=> no checkpoint found at '{}'".format(resume_file))
 
     for epoch in range(start_epoch,num_epochs):
         print('Epoch {}/{} Learning rate:{}'.format(epoch, num_epochs - 1, optimizer.param_groups[0]['lr']))
@@ -133,8 +140,6 @@ def train_model(model, criterion, optimizer, scheduler, dataloaders, num_epochs=
         # Each epoch has a training and validation phase
         for phase in ['trainset', 'testset']:
             if phase == 'trainset':
-                if scheduler:
-                    scheduler.step()
                 model.train(True)  # Set model to training mode
             else:
                 model.train(False)  # Set model to evaluate mode
@@ -145,7 +150,7 @@ def train_model(model, criterion, optimizer, scheduler, dataloaders, num_epochs=
             for i, data in enumerate(dataloaders[phase]):
                 # get the inputs
                 inputs, landmarks = data['image'], data['landmarks']
-                minibatchsize = inputs.size()[0]
+                num_in_batch = inputs.shape[0]
                 # wrap them in Variable
                 if use_gpu:
                     inputs = inputs.cuda()
@@ -154,10 +159,8 @@ def train_model(model, criterion, optimizer, scheduler, dataloaders, num_epochs=
                 # zero the parameter gradients
                 optimizer.zero_grad()
 
-                for batch in range(minibatchsize):
+                for batch in range(num_in_batch):
                     input = Variable(inputs[batch], volatile=False)
-
-                    #if phase == 'train':
 
                     # forward
                     if USE_STN:
@@ -168,15 +171,15 @@ def train_model(model, criterion, optimizer, scheduler, dataloaders, num_epochs=
                         if phase == 'trainset':
                             loss = None
                             for i in range(model.num_modules):
-                                moduleLoss = criterion(outputs[i], Variable(landmarks[batch], requires_grad=False))
+                                module_loss = criterion(outputs[i], Variable(landmarks[batch], requires_grad=False))
                                 if loss is None:
-                                    loss = moduleLoss
+                                    loss = module_loss
                                 else:
-                                    loss += moduleLoss
+                                    loss += module_loss
                         else:
                             center, scale = center_scale_from_landmark(landmarks[batch].cpu().numpy())
                             pts, pts_img = utils.get_preds_fromhm(outputs[-1].cpu().data, center, scale)
-                            loss = utils.landmark_diff(pts_img[0].numpy(), landmarks[batch].cpu().numpy())
+                            loss = utils.landmark_diff(landmarks[batch].cpu().numpy(), pts_img[0].numpy())
                     else:
                         loss = criterion(outputs, landmarks[batch])
                     if phase == 'trainset':
@@ -188,25 +191,35 @@ def train_model(model, criterion, optimizer, scheduler, dataloaders, num_epochs=
                     # statistics
                     running_loss += loss.data[0]
                 else:
-                    running_loss += loss
+                    running_loss += loss[0]
 
-            epoch_loss = running_loss / dataset_sizes[phase]
+            epoch_loss = running_loss / len(dataloaders[phase].dataset)
+
+            if phase == 'testset':
+                testset_loss = epoch_loss
+                if scheduler:
+                    scheduler.step(testset_loss)
+            else:
+                trainset_loss = epoch_loss
 
             print('{} Loss: {:.6f}'.format(
                 phase, epoch_loss))
 
             # deep copy the model
-            if phase == 'testset' and (epoch_loss < best_loss or best_loss == 999.99):
-                best_loss = epoch_loss
+            if phase == 'testset':
+                if best_loss > epoch_loss:
+                    best_loss = epoch_loss
                 best_model_wts = model.state_dict()
                 save_checkpoint({
                     'epoch': epoch + 1,
                     'state_dict': model.state_dict(),
                     'best_prec1': best_loss,
                     'optimizer': optimizer.state_dict(),
-                }, True)
+                }, epoch_loss <= best_loss, dir=results_dir)
 
-        print()
+        if log_progress:
+            progress_file.write('{}, {}, {}, {}, {}\n'.format(epoch, optimizer.param_groups[0]['lr'], dataloaders[phase].batch_size, trainset_loss, testset_loss))
+            progress_file.flush()
 
     time_elapsed = time.time() - since
     print('Training complete in {:.0f}m {:.0f}s'.format(
@@ -218,20 +231,36 @@ def train_model(model, criterion, optimizer, scheduler, dataloaders, num_epochs=
     return model
 
 
-def save_checkpoint(state, is_best, filename='checkpoint.pth.tar'):
-    torch.save(state, filename)
+def save_checkpoint(state, is_best, dir=".", filename='checkpoint.pth.tar'):
+    torch.save(state, os.path.join(dir, filename))
     if is_best:
-        copyfile(filename, 'model_best.pth.tar')
+        copyfile(filename, os.path.join(dir, 'model_best.pth.tar'))
 
 
-def visualize_model(model, dataloader, num_images=120):
+def evaluate_model(model, dataloader, num_images=999, results_dir='test_out'):
+    """
+    apply the model to a selection of test data, and save images with overlayed predicted landmarks
+    :param model: model for prediction
+    :param dataloader: dataloader containing evaluation images and reference landmarks
+    :param num_images: number of images to render calculated landmarks
+    :param results_dir: directory for output
+    :return:
+    """
     images_so_far = 0
-    running_loss = 0.0
+    running_loss_max = 0.0
+    running_loss_sum = 0.0
+
+    errors_file = open(os.path.join(results_dir, "errors.csv"), "w")
+    errors_file.write("max_error,sum_error\n")
+
+    if not os.path.exists(results_dir):
+        os.makedirs(results_dir)
 
     for i, data in enumerate(dataloader):
         inputs, original_input, landmarks = data['image'], data['original'], data['landmarks']
         original_input = cv2.cvtColor( original_input[0].numpy(), cv2.COLOR_RGB2BGR)
         if use_gpu:
+            model = model.cuda()
             inputs, landmarks = inputs[0].cuda(), landmarks.cuda()
 
         inputs = Variable(inputs)
@@ -246,13 +275,16 @@ def visualize_model(model, dataloader, num_images=120):
 
         for j in range(inputs.size()[0]):
             images_so_far += 1
-            mse = utils.landmark_diff(out_landmarks[0].numpy(), landmarks.cpu().numpy()[0])
-            running_loss += mse
-            print('MSE: {}'.format(mse))
-            errorText = "MSE:{:4.2f} ".format(mse)
-            cv2.putText(original_input, errorText, (0, 50), cv2.FONT_HERSHEY_SIMPLEX, 1., (0, 0, 255), 2, cv2.LINE_AA)
-            plotLandmarks(out_landmarks, landmarks.cpu().numpy(), original_input)
-            cv2.imwrite("/home/cpaulse/testOut/lmk{}.png".format(i), original_input)
+            max_error, sum_error = utils.landmark_diff(landmarks.cpu().numpy()[0], out_landmarks[0].numpy())
+            errors_file.write("{},{}\n".format(max_error, sum_error))
+            running_loss_max += max_error
+            running_loss_sum += sum_error
+            print('Max Error: {}'.format(max_error))
+            errorText = "MaxErr:{:4.3f} ".format(max_error)
+            cv2.putText(original_input, errorText, (0, 50), cv2.FONT_HERSHEY_SIMPLEX, 1., (0, 0, 255), 2)
+            # cv2.putText(original_input, errorText, (0, 50), cv2.FONT_HERSHEY_SIMPLEX, 1., (0, 0, 255), 2, cv2.LINE_AA)
+            utils.plot_landmarks_on_image(out_landmarks, landmarks.cpu().numpy(), original_input, model.num_landmarks)
+            cv2.imwrite("{}/lmk{}.png".format(results_dir,i), original_input)
 
             #show_landmarks(image, out_landmarks[0].numpy())
 
@@ -262,56 +294,69 @@ def visualize_model(model, dataloader, num_images=120):
             continue    # Continue if the inner loop wasn't broken.
         break   # Inner loop was broken, break the outer.
 
-    avg_loss = running_loss / images_so_far
-    print('Loss: {:4f}'.format(avg_loss))
+    avg_loss_max = running_loss_max / images_so_far
+    print('Loss: {:4f}'.format(avg_loss_max))
     # plt.show(block=True)    # when database has less images than num_images
 
-if USE_STN:
-    model_ft = STN()
-if USE_FAN:
-    """
-    fan_weights = torch.load(
-        "/home/w80053412/.face_alignment/data/2DFAN-4.pth.tar",
-        map_location=lambda storage,
-        loc: storage)
-    fan_dict = {k.replace('module.', ''): v for k,
-                v in fan_weights['state_dict'].items()}
-    """
-    model_ft = FAN(3)
-    #model_ft.load_state_dict(fan_dict)
-
-if use_gpu:
-    model_ft = model_ft.cuda()
-
-criterion = nn.MSELoss()
-if 0:
-    # Observe that all parameters are being optimized
-    model_ft.load_state_dict(torch.load('mytraining.pth'))
-    optimizer_ft = optim.RMSprop(model_ft.parameters(), lr=2.5e-4)
-    # exp_lr_scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer_ft, gamma=0.1)
-
-    # Decay LR by a factor of 0.1 every 7 epochs
-    exp_lr_scheduler = lr_scheduler.StepLR(optimizer_ft, step_size=7, gamma=0.1)
-
-    model_ft = train_model(model_ft, criterion, optimizer_ft, exp_lr_scheduler, dataloaders=dataloaders,
-                        num_epochs=10)
-#    model_ft = train_model(model_ft, criterion, optimizer_ft, None, dataloaders=dataloaders,
-#                        num_epochs=20)
-
-    torch.save(model_ft.state_dict(), 'mytraining.pth')
-else:
-    model_ft.load_state_dict(torch.load('mytraining.pth'))
+def newFAN(num_modules=4, num_landmarks=68):
+    """ Create a new FAN model with randomized weights """
+    model = FAN(num_modules, num_landmarks)
+    model.apply(weights_init)
+    return model
 
 
-#validationdataset = FaceLandmarksDataset('/home/cpaulse/lfpw/testset', transforms=transforms.Compose([
-#        LandmarkCropWithOriginal(256)
-#    ]))
+def main():
+    """Parse command line input and train or evaluate model."""
+    global args, best_prec1
+    args = parser.parse_args()
 
-validationdataset = FaceLandmarksDataset('/home/cpaulse/lfpw/testset', transforms=transforms.Compose([
-        ColorJitter(),
-        LandmarkCropWithOriginal(256)
-    ]))
+    args.data = os.path.expanduser(args.data)
+    args.log_dir = os.path.expanduser(args.log_dir)
 
-dataloader = DataLoader(validationdataset, shuffle=False, num_workers=1)
+    data_transforms = {
+        'trainset': transforms.Compose([
+            FaceColorJitter(),
+            RandomHorizFlip(),
+            RandomRotation(),
+            LandmarkCrop(256),
+            CreateHeatmaps(n_features=args.num_landmarks)
+        ]),
 
-visualize_model(model_ft, dataloader)
+        'testset': transforms.Compose([
+            LandmarkCropWithOriginal(256)
+        ]),
+    }
+
+    datatype = 1 if args.num_landmarks == 68 else 2
+    dataset = {x: FaceLandmarksDataset(os.path.join(args.data, x),
+                                      transforms=data_transforms[x], type=datatype)
+              for x in ['trainset', 'testset']}
+
+    if args.arch == 'FAN':
+        model_ft = newFAN(args.num_FAN_modules, args.num_landmarks)
+    else:
+        model_ft = None
+
+    if args.evaluate:
+        model_ft.load_state_dict(torch.load(os.path.join(args.log_dir,'checkpoint.pth.tar'))['state_dict'])
+        dataloader = DataLoader(dataset['testset'], shuffle=False, num_workers=1)
+        evaluate_model(model_ft, dataloader, results_dir=args.log_dir)
+    else:
+        optimizer_ft = optim.RMSprop(model_ft.parameters(), lr=args.lr)
+        interval_scheduler = lr_scheduler.MultiStepLR(optimizer_ft,milestones=[15,30])
+        dataloaders = {'trainset': DataLoader(dataset['trainset'], shuffle=True, batch_size=args.batch_size, num_workers=args.workers),
+                       'testset': DataLoader(dataset['testset'], shuffle=False, batch_size=1, num_workers=1)}
+
+        if args.loss_type is not 'MSELoss':
+            criterion = nn.CrossEntropyLoss()
+        else:
+            criterion = nn.MSELoss()
+        if use_gpu:
+            criterion = criterion.cuda()
+
+        model_ft = train_model(model_ft, criterion, optimizer_ft, dataloaders, interval_scheduler,
+                            num_epochs=args.epochs, results_dir=args.log_dir, resume=args.resume, log_progress=args.log_progress)
+
+
+if __name__ == '__main__':
+    main()

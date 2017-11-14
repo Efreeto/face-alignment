@@ -40,7 +40,6 @@ import utils
 # landmarks.
 #
 
-
 def center_scale_from_landmark(landmarks):
     iterable = landmarks.transpose()
     minx = iterable[0].min()
@@ -114,10 +113,23 @@ class RandomHorizFlip(object):
 
         return {'image': image, 'landmarks': landmarks}
 
+
+__imagenet_stats = {'mean': [0.485, 0.456, 0.406],
+                   'std': [0.229, 0.224, 0.225]}
+
+imagenet_pca = {
+    'eigval': torch.Tensor([0.2175, 0.0188, 0.0045]),
+    'eigvec': torch.Tensor([
+        [-0.5675,  0.7192,  0.4009],
+        [-0.5808, -0.0045, -0.8140],
+        [-0.5836, -0.6948,  0.4203],
+    ])
+}
+
 class Lighting(object):
     """Lighting noise(AlexNet - style PCA - based noise)"""
 
-    def __init__(self, alphastd, eigval, eigvec):
+    def __init__(self, alphastd=0.1, eigval=imagenet_pca['eigval'], eigvec=imagenet_pca['eigvec']):
         self.alphastd = alphastd
         self.eigval = eigval
         self.eigvec = eigvec
@@ -136,172 +148,19 @@ class Lighting(object):
         return {'image': image.add(rgb.view(3, 1, 1).expand_as(image)), 'landmarks': landmarks}
 
 
-class Grayscale(object):
-
-    def __call__(self, img):
-
-        gs = img.clone()
-#        gs[0].mul_(0.299).add_(0.587, gs[1]).add_(0.114, gs[2])
-        gs[1].copy_(gs[0])
-        gs[2].copy_(gs[0])
-        return gs
-
-
-class Saturation(object):
-
-    def __init__(self, var):
-        self.var = var
-
-    def __call__(self, sample):
-        img, landmarks = sample['image'], sample['landmarks']
-        img = torch.from_numpy(img)
-        gs = Grayscale()(img)
-        alpha = random.uniform(0, self.var)
-        return {'image': np.array(img.lerp(gs, alpha)), 'landmarks': landmarks}
-
-
-class Brightness(object):
-
-    def __init__(self, var):
-        self.var = var
-
-    def __call__(self, sample):
-        img, landmarks = sample['image'], sample['landmarks']
-        img = torch.from_numpy(img).int()
-        gs = img.new().resize_as_(img).zero_()
-        alpha = random.uniform(0, self.var)
-        return {'image': img.lerp(gs, alpha).numpy(), 'landmarks': landmarks}
-
-
-class Contrast(object):
-
-    def __init__(self, var):
-        self.var = var
-
-    def __call__(self, sample):
-        img, landmarks = sample['image'], sample['landmarks']
-        img =torch.from_numpy(img).int()
-        gs = Grayscale()(img)
-        gs.fill_(gs.mean())
-        alpha = random.uniform(0, self.var)
-        img = img.lerp(gs, alpha)
-        return {'image': np.array(img), 'landmarks': landmarks}
-
-
-class RandomOrder(object):
-    """ Composes several transforms together in random order.
-    """
-
-    def __init__(self, transforms):
-        self.transforms = transforms
-
-    def __call__(self, img):
-        if self.transforms is None:
-            return img
-        order = torch.randperm(len(self.transforms))
-        for i in order:
-            img = self.transforms[i](img)
-        return img
-
-class Compose(object):
-    """Composes several transforms together.
-    Args:
-        transforms (list of ``Transform`` objects): list of transforms to compose.
-    Example:
-        >>> transforms.Compose([
-        >>>     transforms.CenterCrop(10),
-        >>>     transforms.ToTensor(),
-        >>> ])
-    """
-
-    def __init__(self, transforms):
-        self.transforms = transforms
-
-    def __call__(self, img):
-        for t in self.transforms:
-            img = t(img)
-        return img
-
-class Lambda(object):
-    """Apply a user-defined lambda as a transform.
-    Args:
-        lambd (function): Lambda/function to be used for transform.
-    """
-
-    def __init__(self, lambd):
-        assert isinstance(lambd, types.LambdaType)
-        self.lambd = lambd
-
-    def __call__(self, img):
-        return self.lambd(img)
-
-class ColorJitter(object):
-    """Randomly change the brightness, contrast and saturation of an image.
-    Args:
-        brightness (float): How much to jitter brightness. brightness_factor
-            is chosen uniformly from [max(0, 1 - brightness), 1 + brightness].
-        contrast (float): How much to jitter contrast. contrast_factor
-            is chosen uniformly from [max(0, 1 - contrast), 1 + contrast].
-        saturation (float): How much to jitter saturation. saturation_factor
-            is chosen uniformly from [max(0, 1 - saturation), 1 + saturation].
-        hue(float): How much to jitter hue. hue_factor is chosen uniformly from
-            [-hue, hue]. Should be >=0 and <= 0.5.
-    """
-    def __init__(self, brightness=0, contrast=0, saturation=0, hue=0):
-        self.brightness = brightness
-        self.contrast = contrast
-        self.saturation = saturation
-        self.hue = hue
-
-    @staticmethod
-    def get_params(brightness, contrast, saturation, hue):
-        """Get a randomized transform to be applied on image.
-        Arguments are same as that of __init__.
-        Returns:
-            Transform which randomly adjusts brightness, contrast and
-            saturation in a random order.
-        """
-        transforms = []
-        if brightness > 0:
-            brightness_factor = np.random.uniform(max(0, 1 - brightness), 1 + brightness)
-            transforms.append(Lambda(lambda img: F.adjust_brightness(img, brightness_factor)))
-
-        if contrast > 0:
-            contrast_factor = np.random.uniform(max(0, 1 - contrast), 1 + contrast)
-            transforms.append(Lambda(lambda img: F.adjust_contrast(img, contrast_factor)))
-
-        if saturation > 0:
-            saturation_factor = np.random.uniform(max(0, 1 - saturation), 1 + saturation)
-            transforms.append(Lambda(lambda img: F.adjust_saturation(img, saturation_factor)))
-
-        if hue > 0:
-            hue_factor = np.random.uniform(-hue, hue)
-            transforms.append(Lambda(lambda img: F.adjust_hue(img, hue_factor)))
-
-        np.random.shuffle(transforms)
-        transform = Compose(transforms)
-
-        return transform
-
-    def __call__(self, img):
-        """
-        Args:
-            img (PIL Image): Input image.
-        Returns:
-            PIL Image: Color jittered image.
-        """
-        transform = self.get_params(self.brightness, self.contrast,
-                                    self.saturation, self.hue)
-        return transform(img)
-
 class FaceColorJitter(object):
 
     def __init__(self, brightness=0.4, contrast=0.4, saturation=0.4):
-        self.color_jitter = ColorJitter(brightness, contrast, saturation)
+        self.color_jitter = torchvision.transforms.ColorJitter(brightness, contrast, saturation)
 
     def __call__(self, sample):
         image, landmarks = sample['image'], sample['landmarks'].copy()
-        img = F.to_pil_image(image)
+
+        to_pil = torchvision.transforms.ToPILImage()
+        img = to_pil(image)
+        img = self.color_jitter(img)
+        to_tensor = torchvision.transforms.ToTensor()
+        image = to_tensor(img).numpy().transpose(1,2,0)
         return {'image':  image, 'landmarks': landmarks}
 
 
@@ -320,11 +179,13 @@ class RandomRotation(object):
 
         return {'image':  image, 'landmarks': landmarks}
 
+
 class LandmarkCrop(object):
-    def __init__(self, output_size):
+    def __init__(self, output_size, jitter=False):
         assert isinstance(output_size, (int, tuple))
         if isinstance(output_size, int):
             self.output_size = (output_size, output_size)
+            self.jitter = jitter
         else:
             assert len(output_size) == 2
             self.output_size = output_size
@@ -334,6 +195,11 @@ class LandmarkCrop(object):
 
 
         center, scale = bounding_box(landmarks)
+        if self.jitter:
+            # jitter center by up to 5% and scale by up to 10% of original value
+            center[0] = center[0] + (random.random() - 0.5) * 0.05 * center[0]
+            center[1] = center[1] + (random.random() - 0.5) * 0.05 * center[1]
+            scale = scale + random.random() * 0.1 * scale
         image = utils.crop(image, center, scale, 256)
         image = torch.from_numpy(image.transpose(
             (2, 0, 1))).float().div(255.0).unsqueeze_(0)
@@ -446,8 +312,15 @@ class FaceLandmarksDataset(Dataset):
         image = io.imread(self.images_list[idx])
         image = color.grey2rgb(image)   # For some gray scale images
 
-        landmarks_file = os.path.splitext(self.images_list[idx])[0] + '.pts'
-        assert os.path.isfile(landmarks_file)
+        if self.type == 2:
+            landmarks_file_ext = '.land'
+        else:
+            landmarks_file_ext = '.pts'
+
+        landmarks_file = os.path.splitext(self.images_list[idx])[0] + landmarks_file_ext
+        if not os.path.isfile(landmarks_file):
+            os.rename(os.path.splitext(self.images_list[idx])[0] + ".png", os.path.splitext(self.images_list[idx])[0] + ".png.xxx")
+        assert os.path.isfile(landmarks_file), landmarks_file
         landmarks = self.load_landmarks(landmarks_file)
 
         sample = {'image': image, 'landmarks': landmarks}
@@ -461,3 +334,5 @@ class FaceLandmarksDataset(Dataset):
             return np.loadtxt(filename)
         elif self.type == 1:    # 300W
             return np.loadtxt(filename, skiprows=3, comments='}')
+        elif self.type == 2:    # land108_LFPW
+            return np.loadtxt(filename, skiprows=1)

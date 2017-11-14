@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import math
-
+from torch.autograd import Variable
 
 def conv3x3(in_planes, out_planes, strd=1, padding=1, bias=False):
     "3x3 convolution with padding"
@@ -144,9 +144,10 @@ class HourGlass(nn.Module):
 
 class FAN(nn.Module):
 
-    def __init__(self, num_modules=1):
+    def __init__(self, num_modules=1, num_landmarks=68):
         super(FAN, self).__init__()
         self.num_modules = num_modules
+        self.num_landmarks = num_landmarks
 
         # Base part
         self.conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3)
@@ -162,13 +163,13 @@ class FAN(nn.Module):
             self.add_module('conv_last' + str(hg_module),
                             nn.Conv2d(256, 256, kernel_size=1, stride=1, padding=0))
             self.add_module('l' + str(hg_module), nn.Conv2d(256,
-                                                            68, kernel_size=1, stride=1, padding=0))
+                                                            self.num_landmarks, kernel_size=1, stride=1, padding=0))
             self.add_module('bn_end' + str(hg_module), nn.BatchNorm2d(256))
 
             if hg_module < self.num_modules - 1:
                 self.add_module(
                     'bl' + str(hg_module), nn.Conv2d(256, 256, kernel_size=1, stride=1, padding=0))
-                self.add_module('al' + str(hg_module), nn.Conv2d(68,
+                self.add_module('al' + str(hg_module), nn.Conv2d(self.num_landmarks,
                                                                  256, kernel_size=1, stride=1, padding=0))
 
     def forward(self, x):
@@ -259,3 +260,57 @@ class ResNetDepth(nn.Module):
         x = self.fc(x)
 
         return x
+
+
+class STN(nn.Module):
+
+    def __init__(self):
+        super(STN, self).__init__()
+        self.downsample = nn.AvgPool2d(8) # or stride=448/60
+        self.net1_conv1 = nn.Conv2d(3,20,5)
+        self.net1_PReLU = nn.PReLU()
+        self.net1_pool = nn.MaxPool2d(2)
+        self.net1_conv2 = nn.Conv2d(20,48,5)
+        self.net1_conv3 = nn.Conv2d(48,64,3)
+        self.net1_conv4 = nn.Conv2d(64,80,3)
+        self.net1_fc5_1 = nn.Linear(80*3*3, 512)
+        self.net1_drop6 = nn.Dropout2d(0.2)
+        self.net1_68point = nn.Linear(512, 136)
+        self.loc_reg_ = nn.Linear(136, 6)   # in_features: 136
+
+    def forward(self, inp):
+        x = self.downsample(inp)
+        x = self.net1_conv1(x)
+        x = self.net1_PReLU(x)
+        x = self.net1_pool(x)
+        x = self.net1_conv2(x)
+        x = self.net1_PReLU(x)
+        x = self.net1_pool(x)
+        x = self.net1_conv3(x)
+        x = self.net1_PReLU(x)
+        x = self.net1_pool(x)
+        x = self.net1_conv4(x)
+        x = self.net1_PReLU(x)
+        x = x.view(x.size(0), -1)
+        x = self.net1_fc5_1(x)
+        x = self.net1_PReLU(x)
+        x = self.net1_drop6(x)
+        x = self.net1_68point(x)
+        landmarks = self.net1_PReLU(x)
+        theta = self.loc_reg_(landmarks)
+        theta = theta.view(1,2,3)
+        # theta = Variable(torch.Tensor([[1, 0, 0],[0, 1, 0]]).cuda().view(1, 2, 3).repeat(inp.size(0), 1, 1), requires_grad=True) # identity xform mat. nframes=inp.size(0)
+
+        grid = F.affine_grid(theta, torch.Size([1, 3, 256, 256]))   # Prepare the transfomer grid with (256, 256) size that FAN expects, w.r.t theta
+        outp = F.grid_sample(inp, grid)                             # "Rotate" the image by applying the grid
+        return outp, landmarks, theta
+
+class ChainedModel(nn.Module):
+
+    def __init__(self, stack_size):
+        self.fan = FAN(stack_size)
+        self.stn = STN()
+
+    def forward(self, inp):
+        outp, landmarks, theta = self.stn(inp)
+        return self.fan(outp)

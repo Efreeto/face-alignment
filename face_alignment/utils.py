@@ -226,10 +226,21 @@ def appdata_dir(appname=None, roaming=False):
 
 def shuffle_lr(parts, pairs=None):
     if pairs is None:
-        pairs = [[0, 16], [1, 15], [2, 14], [3, 13], [4, 12], [5, 11], [6, 10],
+        if parts.shape[0] == 68:
+            pairs = [[0, 16], [1, 15], [2, 14], [3, 13], [4, 12], [5, 11], [6, 10],
                  [7, 9], [17, 26], [18, 25], [19, 24], [20, 23], [21, 22], [36, 45],
                  [37, 44], [38, 43], [39, 42], [41, 46], [40, 47], [31, 35], [32, 34],
                  [50, 52], [49, 53], [48, 54], [61, 63], [60, 64], [67, 65], [59, 55], [58, 56]]
+        elif parts.shape[0] == 108:
+            pairs = [[0, 32], [1, 31], [2, 30], [3, 29], [4, 28], [5, 27], [6, 26],
+                     [7, 25], [8, 24], [9, 23], [10, 22], [11, 21], [12, 20], [13, 19],
+                     [14, 18], [15, 17], [33, 42], [34, 41], [35, 40], [36, 39], [37, 38],
+                     [67, 68], [66, 69], [65, 70], [64, 71], [52, 61], [53, 60], [72, 75], [54, 59],
+                     [55, 58], [56, 63], [73, 76], [57, 62], [78, 79], [80, 81], [82, 83], [84, 85],
+                     [86, 87], [47, 51], [48, 50], [88, 94], [89, 93], [90, 92], [100, 104], [101, 103],
+                     [107, 105], [99, 95], [98, 96], [74, 77]]
+        else:
+            assert(False, "unexpected number of landmarks")
     for matched_p in pairs:
         idx1, idx2 = matched_p[0], matched_p[1]
         tmp = parts[idx1].copy()
@@ -268,18 +279,17 @@ def flip(tensor, is_label=False):
     return tensor
 
 
-def landmark_diff(lm1, lm2, use_max=True):
+def landmark_diff(lm1, lm2, write_diffs=False):
     norm = abs(lm1[0][1] - lm1[8][1])
     if norm < 0.1:
+        print('unexpected landmark normalization')
         norm = 1
 
-    distances = scipy.spatial.distance.cdist(lm1, lm2)
-    if use_max:
-        return distances.max()/norm
-    else:
-        distances = distances.sum(axis=-1)
-        distances = np.sqrt(distances)/norm
-        return distances
+    distances = scipy.spatial.distance.cdist(lm1, lm2).diagonal()
+    max_distance = distances.max()/norm
+    avg_distance = distances.sum()/norm
+
+    return max_distance, avg_distance
 
 def rotate(origin, point, angle):
     """
@@ -331,3 +341,46 @@ def toc(timename, fps=False):
         print(timename, ": %.3f" % (elapsed))
     else:
         print(timename, ": %.3f (fps: %.1f)" % (elapsed, 1/elapsed))
+
+
+def plot_landmarks_on_image(calculated, expected, frame, num_landmarks=68):
+    for i in range(num_landmarks):
+        expected_point_color = (0,0,255)
+        calculated_point_color = (255,255,255)
+        # for landmark in landmarks:
+        cv2.circle(frame, (int(expected[0][i][0]), int(expected[0][i][1])),
+                   1, expected_point_color, thickness=2)
+        cv2.circle(frame, (int(calculated[0][i][0]), int(calculated[0][i][1])),
+                   1, calculated_point_color, thickness=2)
+        cv2.line(frame,
+                 (int(expected[0][i][0]), int(expected[0][i][1])),
+                 (int(calculated[0][i][0]), int(calculated[0][i][1])),
+                 (255,255,255),
+                 thickness=1,
+                 lineType=1)
+
+def show_landmarks(image, landmarks):
+    """Show image with landmarks"""
+    plt.imshow(image)
+    plt.scatter(landmarks[:, 0], landmarks[:, 1], s=10, marker='.', c='r')
+    plt.pause(0.001)  # pause a bit so that plots are updated
+
+# Helper function to show a batch
+def show_landmarks_batch(sample_batched):
+    """Show image with landmarks for a batch of samples."""
+    images_batch, landmarks_batch = \
+            sample_batched['image'], sample_batched['landmarks']
+    batch_size = len(images_batch)
+    print(images_batch.shape, landmarks_batch.shape)
+    im_size = images_batch.size(2)
+    print(im_size)
+
+    grid = utils.make_grid(images_batch)
+    plt.imshow(grid.numpy().transpose((1, 2, 0)))
+
+    for i in range(batch_size):
+        plt.scatter(landmarks_batch[i, :, 0].numpy() + i * im_size,
+                    landmarks_batch[i, :, 1].numpy(),
+                    s=10, marker='.', c='r')
+
+        plt.title('Batch from dataloader')
