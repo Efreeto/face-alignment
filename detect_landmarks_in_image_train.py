@@ -1,5 +1,3 @@
-# Modified from http://pytorch.org/tutorials/beginner/transfer_learning_tutorial.html
-
 from __future__ import print_function, division
 
 import argparse
@@ -50,12 +48,6 @@ parser.add_argument('-b', '--batch-size', default=10, type=int,
                     metavar='N', help='mini-batch size (default: 10)')
 parser.add_argument('--lr', '--learning-rate', default=0.00025, type=float,
                     metavar='LR', help='initial learning rate')
-parser.add_argument('--momentum', default=0.9, type=float, metavar='M',
-                    help='momentum')
-parser.add_argument('--weight-decay', '--wd', default=1e-4, type=float,
-                    metavar='W', help='weight decay (default: 1e-4)')
-parser.add_argument('--print-freq', '-p', default=10, type=int,
-                    metavar='N', help='print frequency (default: 10)')
 parser.add_argument('--resume', dest='resume', action='store_true',
                     help= 'resume training from checkpoint file in logging directory')
 parser.add_argument('-e', '--evaluate', dest='evaluate', action='store_true',
@@ -232,9 +224,10 @@ def train_model(model,
 
 
 def save_checkpoint(state, is_best, dir=".", filename='checkpoint.pth.tar'):
-    torch.save(state, os.path.join(dir, filename))
+    checkpoint_path = os.path.join(dir, filename)
+    torch.save(state, checkpoint_path)
     if is_best:
-        copyfile(filename, os.path.join(dir, 'model_best.pth.tar'))
+        copyfile(checkpoint_path, os.path.join(dir, 'model_best.pth.tar'))
 
 
 def evaluate_model(model, dataloader, num_images=999, results_dir='test_out'):
@@ -279,10 +272,8 @@ def evaluate_model(model, dataloader, num_images=999, results_dir='test_out'):
             errors_file.write("{},{}\n".format(max_error, sum_error))
             running_loss_max += max_error
             running_loss_sum += sum_error
-            print('Max Error: {}'.format(max_error))
             errorText = "MaxErr:{:4.3f} ".format(max_error)
             cv2.putText(original_input, errorText, (0, 50), cv2.FONT_HERSHEY_SIMPLEX, 1., (0, 0, 255), 2)
-            # cv2.putText(original_input, errorText, (0, 50), cv2.FONT_HERSHEY_SIMPLEX, 1., (0, 0, 255), 2, cv2.LINE_AA)
             utils.plot_landmarks_on_image(out_landmarks, landmarks.cpu().numpy(), original_input, model.num_landmarks)
             cv2.imwrite("{}/lmk{}.png".format(results_dir,i), original_input)
 
@@ -307,7 +298,7 @@ def newFAN(num_modules=4, num_landmarks=68):
 
 def main():
     """Parse command line input and train or evaluate model."""
-    global args, best_prec1
+    global args
     args = parser.parse_args()
 
     args.data = os.path.expanduser(args.data)
