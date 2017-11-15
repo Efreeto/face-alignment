@@ -7,7 +7,9 @@ import math
 import numpy as np
 import cv2
 import time
-import scipy
+
+from torch.autograd import Variable
+import matplotlib.pyplot as plt
 
 
 def _gaussian(
@@ -77,15 +79,47 @@ def transform(point, center, scale, resolution, invert=False):
     return new_point.int()
 
 
-def bounding_box(iterable):
-    minx = iterable[0].min()
-    miny = iterable[1].min()
-    maxx = iterable[0].max()
-    maxy = iterable[1].max()
-    # mins = torch.min(iterable, 1).view(2)
-    # maxs = torch.max(iterable, 1).view(2)
-    center = torch.FloatTensor([maxx - (maxx - minx) / 2, maxy - (maxy - miny) / 2])
-    return center, (maxx - minx + maxy - miny) / 190, (minx, miny, maxx, maxy)  # --center and scale
+def transform_Variable(point, center, scale, resolution, invert=False):
+    _pt = Variable(torch.ones(3), requires_grad=True)
+    if point.is_cuda:
+        _pt = _pt.cuda()
+    _pt[0] = point[0]
+    _pt[1] = point[1]
+
+    h = 200.0 * scale
+    t = Variable(torch.eye(3))
+    if point.is_cuda:
+        t = t.cuda()
+    t[0, 0] = resolution / h
+    t[1, 1] = resolution / h
+    t[0, 2] = resolution * (-center[0] / h + 0.5)
+    t[1, 2] = resolution * (-center[1] / h + 0.5)
+
+    if invert:
+        t = torch.inverse(t)
+
+    new_point = (torch.matmul(t, _pt))[0:2]
+
+    return new_point.int()
+
+
+
+def center_scale_from_bbox(bbox):
+    minx = bbox[0]
+    miny = bbox[1]
+    maxx = bbox[2]
+    maxy = bbox[3]
+    center = torch.FloatTensor([maxx - (maxx - minx) / 2.0, maxy - (maxy - miny) / 2.0])
+    scale = (maxx - minx + maxy - miny) / 190.0
+    return center, scale
+
+
+def bounding_box(landmarks):
+    minx = landmarks[:,0].min()
+    miny = landmarks[:,1].min()
+    maxx = landmarks[:,0].max()
+    maxy = landmarks[:,1].max()
+    return (minx, miny, maxx, maxy)
 
 
 def crop(image, center, scale, resolution=256.0):
@@ -163,6 +197,38 @@ def get_preds_fromhm(hm, center=None, scale=None):
                     preds[i, j], center, scale, hm.size(2), True)
 
     return preds, preds_orig
+
+
+def get_preds_fromhm_Variable(hm, center=None, scale=None):
+    max, idx = torch.max(
+        hm.view(hm.size(0), hm.size(1), hm.size(2) * hm.size(3)), 2)
+    preds = idx.view(idx.size(0), idx.size(1), 1).repeat(1, 1, 2).float()
+    preds[..., 0] = (preds[..., 0] - 1) % hm.size(3) + 1
+    preds[..., 1] = preds[..., 1].add(-1).div(hm.size(2)).floor().add(1)
+
+    for i in range(preds.size(0)):
+        for j in range(preds.size(1)):
+            hm_ = hm[i, j, :].data
+            pX, pY = preds[i, j, 0].data.cpu().numpy(), preds[i, j, 1].data.cpu().numpy()
+            if pX > 0 and pX < 63 and pY > 0 and pY < 63:
+                diff = Variable(torch.FloatTensor(
+                    [hm_[int(pY),
+                         int(pX) + 1] - hm_[int(pY),
+                                            int(pX) - 1],
+                     hm_[int(pY) + 1, int(pX)] - hm_[int(pY) - 1, int(pX)]])).cuda()
+                preds[i, j] = preds[i, j].add(diff.sign().mul(.25))
+
+    preds = preds.add(1)
+
+    preds_orig = preds.clone()
+    if center is not None and scale is not None:
+        for i in range(hm.size(0)):
+            for j in range(hm.size(1)):
+                preds_orig[i, j] = transform_Variable(
+                    preds[i, j], center, scale, hm.size(2), True)
+
+    return preds, preds_orig
+
 
 # From pyzolib/paths.py (https://bitbucket.org/pyzo/pyzolib/src/tip/paths.py)
 
@@ -291,6 +357,7 @@ def landmark_diff(lm1, lm2, write_diffs=False):
 
     return max_distance, avg_distance
 
+
 def rotate(origin, point, angle):
     """
     Rotate a point counterclockwise by a given angle around a given origin.
@@ -326,11 +393,49 @@ def rotate(origin, point, angle):
     qy = -qy
     return qx, qy
 
+
+# https://scipython.com/book/chapter-6-numpy/examples/creating-a-rotation-matrix-in-numpy/
+# 3D version: https://stackoverflow.com/a/6802723/2680660
+def transformation_matrix(rotation_angle):
+    theta = np.radians(rotation_angle)
+    c, s = np.cos(theta), np.sin(theta)
+    mat = np.matrix('{} {} 0; {} {} 0'.format(c, -s, s, c), np.float32)
+    return mat
+
+
 def write2file(image, filename):
     cv2.imwrite(filename+".png", image)
     np.savetxt(filename+"_0.txt", image[...,0], fmt='%i')
     np.savetxt(filename+"_1.txt", image[...,1], fmt='%i')
     np.savetxt(filename+"_2.txt", image[...,2], fmt='%i')
+
+
+def display_landmarks(image, landmarks, gt_landmarks, fig_title):
+    plt.figure(fig_title)
+    plt.clf()
+    plt.imshow(image)
+    if len(gt_landmarks):
+        plt.plot(gt_landmarks[0:17,0] ,gt_landmarks[0:17,1], marker='o',markersize=4,linestyle='-',color='b',lw=1)
+        plt.plot(gt_landmarks[17:22,0],gt_landmarks[17:22,1],marker='o',markersize=4,linestyle='-',color='b',lw=1)
+        plt.plot(gt_landmarks[22:27,0],gt_landmarks[22:27,1],marker='o',markersize=4,linestyle='-',color='b',lw=1)
+        plt.plot(gt_landmarks[27:31,0],gt_landmarks[27:31,1],marker='o',markersize=4,linestyle='-',color='b',lw=1)
+        plt.plot(gt_landmarks[31:36,0],gt_landmarks[31:36,1],marker='o',markersize=4,linestyle='-',color='b',lw=1)
+        plt.plot(gt_landmarks[36:42,0],gt_landmarks[36:42,1],marker='o',markersize=4,linestyle='-',color='b',lw=1)
+        plt.plot(gt_landmarks[42:48,0],gt_landmarks[42:48,1],marker='o',markersize=4,linestyle='-',color='b',lw=1)
+        plt.plot(gt_landmarks[48:60,0],gt_landmarks[48:60,1],marker='o',markersize=4,linestyle='-',color='b',lw=1)
+        plt.plot(gt_landmarks[60:68,0],gt_landmarks[60:68,1],marker='o',markersize=4,linestyle='-',color='b',lw=1)
+    if len(landmarks):
+        plt.plot(landmarks[0:17,0],landmarks[0:17,1],marker='o',markersize=6,linestyle='-',color='w',lw=2)
+        plt.plot(landmarks[17:22,0],landmarks[17:22,1],marker='o',markersize=6,linestyle='-',color='w',lw=2)
+        plt.plot(landmarks[22:27,0],landmarks[22:27,1],marker='o',markersize=6,linestyle='-',color='w',lw=2)
+        plt.plot(landmarks[27:31,0],landmarks[27:31,1],marker='o',markersize=6,linestyle='-',color='w',lw=2)
+        plt.plot(landmarks[31:36,0],landmarks[31:36,1],marker='o',markersize=6,linestyle='-',color='w',lw=2)
+        plt.plot(landmarks[36:42,0],landmarks[36:42,1],marker='o',markersize=6,linestyle='-',color='w',lw=2)
+        plt.plot(landmarks[42:48,0],landmarks[42:48,1],marker='o',markersize=6,linestyle='-',color='w',lw=2)
+        plt.plot(landmarks[48:60,0],landmarks[48:60,1],marker='o',markersize=6,linestyle='-',color='w',lw=2)
+        plt.plot(landmarks[60:68,0],landmarks[60:68,1],marker='o',markersize=6,linestyle='-',color='w',lw=2)
+    plt.axis('off')
+    plt.show(block=False)
 
 times = {}
 def tic(timename):

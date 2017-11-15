@@ -9,7 +9,7 @@ from scipy import ndimage
 from PIL import Image
 import torch.nn.functional as F
 
-import utils
+from . import utils
 
 ######################################################################
 # Transforms
@@ -39,28 +39,6 @@ import utils
 # Observe below how these transforms had to be applied both on the image and
 # landmarks.
 #
-
-def center_scale_from_landmark(landmarks):
-    iterable = landmarks.transpose()
-    minx = iterable[0].min()
-    miny = iterable[1].min()
-    maxx = iterable[0].max()
-    maxy = iterable[1].max()
-    center = torch.FloatTensor([maxx - (maxx - minx) / 2, maxy - (maxy - miny) / 2])
-    scale = (maxx - minx + maxy - miny) / 190  # --center and scale
-    return center, scale
-
-
-def bounding_box(landmarks):
-    iterable = landmarks.transpose()
-    minx = iterable[0].min()
-    miny = iterable[1].min()
-    maxx = iterable[0].max()
-    maxy = iterable[1].max()
-    #mins = torch.min(iterable, 1).view(2)
-    #maxs = torch.max(iterable, 1).view(2)
-    center = torch.FloatTensor([maxx - (maxx - minx) / 2, maxy - (maxy - miny) / 2])
-    return center, (maxx - minx + maxy - miny) / 190  # --center and scale
 
 
 class Rescale(object):
@@ -165,45 +143,70 @@ class FaceColorJitter(object):
 
 
 class RandomRotation(object):
-    def __init__(self, maximum_angle=50.):
-        self.maximum_angle = maximum_angle
-
-    def __call__(self, sample):
-        image, landmarks = sample['image'], sample['landmarks'].copy()
-        rotation_angle = (random.random() - 0.5) * 2 * self.maximum_angle
-        height = image.shape[0]
-        width = image.shape[1]
-        for i in range(landmarks.shape[0]):
-            landmarks[i] = utils.rotate((width/2.0, height/2.0), landmarks[i], rotation_angle)
-        image = ndimage.rotate(image, rotation_angle, reshape=False)
-
-        return {'image':  image, 'landmarks': landmarks}
-
-
-class LandmarkCrop(object):
-    def __init__(self, output_size, jitter=False):
-        assert isinstance(output_size, (int, tuple))
-        if isinstance(output_size, int):
-            self.output_size = (output_size, output_size)
-            self.jitter = jitter
-        else:
-            assert len(output_size) == 2
-            self.output_size = output_size
+    def __init__(self, maximum_angle=50., minimum_angle=5.):
+        self.maximum_angle = maximum_angle - minimum_angle
+        self.minimum_angle = minimum_angle
 
     def __call__(self, sample):
         image, landmarks = sample['image'], sample['landmarks']
+        rotation_angle = (random.random() - 0.5) * 2 * self.maximum_angle
+        if rotation_angle > 0:
+            rotation_angle += self.minimum_angle
+        else:
+            rotation_angle -= self.minimum_angle
+        manual_theta = utils.transformation_matrix(-rotation_angle)
+        manual_theta_inv = utils.transformation_matrix(rotation_angle)
+
+        image_rot = ndimage.rotate(image, rotation_angle, reshape=True)
+        origin_org = ((image.shape[1] / 2.0, image.shape[0] / 2.0))
+        origin_rot = ((image_rot.shape[1] / 2.0, image_rot.shape[0] / 2.0))
+
+        # Rotate BBox here?
+        # center, scale = bounding_box(landmarks)
+        # center = utils.rotate(origin_org, center, rotation_angle)
+        # # if self.enable_cuda:
+        # #     center = center.cuda()
+        # center = center + origin_rot - origin_org  # because reshape=True
+
+        landmarks_rot = landmarks - origin_org
+        landmarks_rot = np.dot(landmarks_rot, manual_theta_inv)[:, :2]
+        landmarks_rot = landmarks_rot + origin_rot
+        # display_landmarks(image, landmarks.cpu().numpy(), [], "Original")
+        # display_landmarks(image_rot, landmarks_rot.cpu().numpy(), [], "Manually Rotated")
+
+        sample['image_org'] = image
+        sample['landmarks_org'] = landmarks
+        sample['image'] = image_rot
+        sample['landmarks'] = landmarks_rot
+        sample['theta'] = manual_theta
+
+        return sample
 
 
-        center, scale = bounding_box(landmarks)
-        if self.jitter:
-            # jitter center by up to 5% and scale by up to 10% of original value
-            center[0] = center[0] + (random.random() - 0.5) * 0.05 * center[0]
-            center[1] = center[1] + (random.random() - 0.5) * 0.05 * center[1]
-            scale = scale + random.random() * 0.1 * scale
-        image = utils.crop(image, center, scale, 256)
-        image = torch.from_numpy(image.transpose(
-            (2, 0, 1))).float().div(255.0).unsqueeze_(0)
-        return {'image': image, 'landmarks': landmarks}
+class LandmarkCrop(object):
+    def __init__(self, resolution):
+        self.resolution = resolution
+
+    def __call__(self, sample):
+        image, landmarks = sample['image'], sample['landmarks']
+        bbox = utils.bounding_box(landmarks)
+        center, scale = utils.center_scale_from_bbox(bbox)
+        image = utils.crop(image, center, scale, self.resolution)
+        landmarks = landmarks - [bbox[0], bbox[1]]
+        sample['image'] = image
+        sample['landmarks'] = landmarks
+
+        if len(sample['image_org']):
+            image, landmarks = sample['image_org'], sample['landmarks_org']
+            bbox = utils.bounding_box(landmarks)
+            center, scale = utils.center_scale_from_bbox(bbox)
+            image = utils.crop(image, center, scale, self.resolution)
+            landmarks = landmarks - [bbox[0], bbox[1]]
+            sample['image_org'] = image
+            sample['landmarks_org'] = landmarks
+
+        return sample
+
 
 class LandmarkCropWithOriginal(object):
     def __init__(self, output_size):
@@ -218,11 +221,12 @@ class LandmarkCropWithOriginal(object):
         image, landmarks = sample['image'], sample['landmarks']
         original_image = image
 
-        center, scale = bounding_box(landmarks)
+        center, scale = utils.bounding_box(utils.center_scale_from_bbox(landmarks))
         image = utils.crop(image, center, scale, 256)
         image = torch.from_numpy(image.transpose(
             (2, 0, 1))).float().div(255.0).unsqueeze_(0)
         return {'image': image, 'original': original_image, 'landmarks': landmarks}
+
 
 class CreateHeatmaps(object):
     def __init__(self, output_size=64, n_features=68):
@@ -231,7 +235,7 @@ class CreateHeatmaps(object):
 
     def __call__(self, sample):
         landmarks = sample['landmarks']
-        center, scale = center_scale_from_landmark(landmarks)
+        center, scale = utils.bounding_box(utils.center_scale_from_bbox(landmarks))
         heatmaps = torch.Tensor(1, self.n_features, self.output_size, self.output_size)
         heatmap = np.zeros((self.n_features, self.output_size, self.output_size))
         for i in range(self.n_features):
@@ -277,15 +281,14 @@ class ToTensor(object):
     """Convert ndarrays in sample to Tensors."""
 
     def __call__(self, sample):
-        image, landmarks = sample['image'], sample['landmarks']
-
-        # swap color axis because
-        # numpy image: H x W x C
-        # torch image: C X H X W
-        image = image.transpose((2, 0, 1))
-        return {'image': torch.from_numpy(image),
-                'landmarks': landmarks}
-
+        for key in sample:
+            if key in ['image', 'image_org']:
+                sample[key] = torchvision.transforms.ToTensor()(sample[key])
+            elif key == 'filename':
+                continue
+            else:
+                sample[key] = torch.from_numpy(sample[key]).float()
+        return sample
 
 class FaceLandmarksDataset(Dataset):
     """Face Landmarks dataset."""
@@ -300,10 +303,11 @@ class FaceLandmarksDataset(Dataset):
         self.type = type
         self.transforms = transforms
 
-        types = ('*.jpg', '*.png')
+        image_exts = ('*.jpg', '*.png')
         self.images_list = []
-        for ext in types:
-            self.images_list.extend(glob.glob(os.path.join(path, ext)))
+        for ext in image_exts:
+            self.images_list.extend(sorted(glob.glob(os.path.join(path, ext))))
+        assert self.images_list, "path does not contain images"
 
     def __len__(self):
         return len(self.images_list)
@@ -312,27 +316,20 @@ class FaceLandmarksDataset(Dataset):
         image = io.imread(self.images_list[idx])
         image = color.grey2rgb(image)   # For some gray scale images
 
-        if self.type == 2:
-            landmarks_file_ext = '.land'
-        else:
-            landmarks_file_ext = '.pts'
+        filename = self.images_list[idx]
+        basename = os.path.splitext(filename)[0]
+        if self.type == 0:    # land110
+            landmarks = np.loadtxt(basename + '.land', skiprows=1)
+            landmarks = np.vstack((landmarks[0:32:2], landmarks[32:64], landmarks[88:108]))
+        elif self.type == 1:  # 8W
+            landmarks = np.loadtxt(basename + '.pts')
+        elif self.type == 2:  # 300W, lfpw
+            landmarks = np.loadtxt(basename + '.pts', skiprows=3, comments='}')
+        elif self.type == 3:  # FEI
+            landmarks = np.ones((68,2))
 
-        landmarks_file = os.path.splitext(self.images_list[idx])[0] + landmarks_file_ext
-        if not os.path.isfile(landmarks_file):
-            os.rename(os.path.splitext(self.images_list[idx])[0] + ".png", os.path.splitext(self.images_list[idx])[0] + ".png.xxx")
-        assert os.path.isfile(landmarks_file), landmarks_file
-        landmarks = self.load_landmarks(landmarks_file)
-
-        sample = {'image': image, 'landmarks': landmarks}
+        sample = {'image': image, 'landmarks': landmarks, 'filename': filename}
         if self.transforms:
             sample = self.transforms(sample)
 
         return sample
-
-    def load_landmarks(self, filename):
-        if self.type == 0:    # 8W
-            return np.loadtxt(filename)
-        elif self.type == 1:    # 300W
-            return np.loadtxt(filename, skiprows=3, comments='}')
-        elif self.type == 2:    # land108_LFPW
-            return np.loadtxt(filename, skiprows=1)
