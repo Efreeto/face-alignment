@@ -161,23 +161,12 @@ class RandomRotation(object):
         origin_org = ((image.shape[1] / 2.0, image.shape[0] / 2.0))
         origin_rot = ((image_rot.shape[1] / 2.0, image_rot.shape[0] / 2.0))
 
-        # Rotate BBox here?
-        # center, scale = bounding_box(landmarks)
-        # center = utils.rotate(origin_org, center, rotation_angle)
-        # # if self.enable_cuda:
-        # #     center = center.cuda()
-        # center = center + origin_rot - origin_org  # because reshape=True
-
         landmarks_rot = landmarks - origin_org
         landmarks_rot = np.asarray(np.dot(landmarks_rot, manual_theta_inv)[:, :2])
         landmarks_rot = landmarks_rot + origin_rot
-        # display_landmarks(image, landmarks.cpu().numpy(), [], "Original")
-        # display_landmarks(image_rot, landmarks_rot.cpu().numpy(), [], "Manually Rotated")
 
-        sample['image_org'] = image
-        sample['landmarks_org'] = landmarks
-        sample['image'] = image_rot
-        sample['landmarks'] = landmarks_rot
+        sample['image_rot'] = image_rot
+        sample['landmarks_rot'] = landmarks_rot
         sample['theta'] = manual_theta
 
         return sample
@@ -196,14 +185,14 @@ class LandmarkCrop(object):
         sample['image'] = image
         sample['landmarks'] = landmarks
 
-        if 'image_org' in sample:    # if RandomRotation, crop around the rotated image
-            image, landmarks = sample['image_org'], sample['landmarks_org']
+        if 'image_rot' in sample:    # if RandomRotation, crop around the rotated image
+            image, landmarks = sample['image_rot'], sample['landmarks_rot']
             bbox = utils.bounding_box(landmarks)
             center, scale = utils.center_scale_from_bbox(bbox)
             image = utils.crop(image, center, scale, self.resolution)
             landmarks = landmarks - (bbox[0], bbox[1])
-            sample['image_org'] = image
-            sample['landmarks_org'] = landmarks
+            sample['image_rot'] = image
+            sample['landmarks_rot'] = landmarks
 
         return sample
 
@@ -262,7 +251,7 @@ class ToTensor(object):
 
     def __call__(self, sample):
         for key in sample:
-            if key in ['image', 'image_org']:
+            if key in ['image', 'image_rot']:
                 sample[key] = torchvision.transforms.ToTensor()(sample[key])
             elif key in  ['filename', 'heatmaps']:
                 continue
