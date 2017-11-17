@@ -141,49 +141,33 @@ def train_model(model,
             # Iterate over data.
             for i, data in enumerate(dataloaders[phase]):
                 # get the inputs
-                inputs, landmarks = data['image'], data['landmarks']
-                num_in_batch = inputs.shape[0]
-                # wrap them in Variable
+                inputs, heatmaps = data['image'], data['heatmaps']
                 if use_gpu:
-                    inputs = inputs.cuda()
-                    landmarks = landmarks.cuda()
+                    inputs, heatmaps = inputs.cuda(), heatmaps.cuda()
+                # wrap them in Variable
+                inputs, heatmaps = Variable(inputs, volatile=False), Variable(heatmaps, requires_grad=False)
 
                 # zero the parameter gradients
                 optimizer.zero_grad()
 
-                for batch in range(num_in_batch):
-                    input = Variable(inputs[batch], volatile=False)
+                # forward
+                outputs = model(inputs)
 
-                    # forward
-                    if USE_STN:
-                        _, outputs, _ = model(input)
-                    if USE_FAN:
-                        outputs = model(input)
-
-                        if phase == 'trainset':
-                            loss = None
-                            for i in range(model.num_modules):
-                                module_loss = criterion(outputs[i], Variable(landmarks[batch], requires_grad=False))
-                                if loss is None:
-                                    loss = module_loss
-                                else:
-                                    loss += module_loss
-                        else:
-                            center, scale = center_scale_from_landmark(landmarks[batch].cpu().numpy())
-                            pts, pts_img = utils.get_preds_fromhm(outputs[-1].cpu().data, center, scale)
-                            loss = utils.landmark_diff(landmarks[batch].cpu().numpy(), pts_img[0].numpy())
+                loss = None
+                for i in range(model.num_modules):
+                    module_loss = criterion(outputs[i], heatmaps)
+                    if loss is None:
+                        loss = module_loss
                     else:
-                        loss = criterion(outputs, landmarks[batch])
-                    if phase == 'trainset':
-                        loss.backward()
+                        loss += module_loss
 
                 # backward + optimize only if in training phase
                 if phase == 'trainset':
+                    loss.backward()
                     optimizer.step()
-                    # statistics
-                    running_loss += loss.data[0]
-                else:
-                    running_loss += loss[0]
+
+                # statistics
+                running_loss += loss.data[0]
 
             epoch_loss = running_loss / len(dataloaders[phase].dataset)
 
@@ -250,40 +234,30 @@ def evaluate_model(model, dataloader, num_images=999, results_dir='test_out'):
         os.makedirs(results_dir)
 
     for i, data in enumerate(dataloader):
-        inputs, original_input, landmarks = data['image'], data['original'], data['landmarks']
-        original_input = cv2.cvtColor( original_input[0].numpy(), cv2.COLOR_RGB2BGR)
+        inputs, filename, landmarks = data['image'], data['filename'][0], data['landmarks'][0].cpu().numpy()
+        original_input = cv2.imread(filename)
         if use_gpu:
             model = model.cuda()
-            inputs, landmarks = inputs[0].cuda(), landmarks.cuda()
-
+            inputs = inputs.cuda()
         inputs = Variable(inputs)
-        #landmarks = Variable(landmarks)
 
         if USE_STN:
             _, outputs, _ = model(inputs)
         else:
             outputs = model(inputs)
-            center, scale = center_scale_from_landmark(landmarks.cpu().numpy())
+            center, scale = utils.center_scale_from_bbox(utils.bounding_box(landmarks))
             _, out_landmarks = utils.get_preds_fromhm(outputs[-1].cpu().data, center, scale)
+            out_landmarks = out_landmarks[0].numpy()
 
-        for j in range(inputs.size()[0]):
-            images_so_far += 1
-            max_error, sum_error = utils.landmark_diff(landmarks.cpu().numpy()[0], out_landmarks[0].numpy())
-            errors_file.write("{},{}\n".format(max_error, sum_error))
-            running_loss_max += max_error
-            running_loss_sum += sum_error
-            errorText = "MaxErr:{:4.3f} ".format(max_error)
-            cv2.putText(original_input, errorText, (0, 50), cv2.FONT_HERSHEY_SIMPLEX, 1., (0, 0, 255), 2)
-            utils.plot_landmarks_on_image(out_landmarks, landmarks.cpu().numpy(), original_input, model.num_landmarks)
-            cv2.imwrite("{}/lmk{}.png".format(results_dir,i), original_input)
-
-            #show_landmarks(image, out_landmarks[0].numpy())
-
-            if images_so_far == num_images:
-                break
-        else:
-            continue    # Continue if the inner loop wasn't broken.
-        break   # Inner loop was broken, break the outer.
+        images_so_far += 1
+        max_error, sum_error = utils.landmark_diff(landmarks, out_landmarks)
+        errors_file.write("{},{}\n".format(max_error, sum_error))
+        running_loss_max += max_error
+        running_loss_sum += sum_error
+        errorText = "MaxErr:{:4.3f} ".format(max_error)
+        cv2.putText(original_input, errorText, (0, 50), cv2.FONT_HERSHEY_SIMPLEX, 1., (0, 0, 255), 2)
+        utils.plot_landmarks_on_image(out_landmarks, landmarks, original_input, model.num_landmarks)
+        cv2.imwrite("{}/lmk{}.png".format(results_dir,i), original_input)
 
     avg_loss_max = running_loss_max / images_so_far
     print('Loss: {:4f}'.format(avg_loss_max))
@@ -310,11 +284,14 @@ def main():
             RandomHorizFlip(),
             RandomRotation(),
             LandmarkCrop(256),
-            CreateHeatmaps(n_features=args.num_landmarks)
+            CreateHeatmaps(n_features=args.num_landmarks),
+            ToTensor()
         ]),
 
         'testset': transforms.Compose([
-            LandmarkCropWithOriginal(256)
+            LandmarkCrop(256),
+            CreateHeatmaps(n_features=args.num_landmarks),
+            ToTensor()
         ]),
     }
 

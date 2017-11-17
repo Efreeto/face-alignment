@@ -169,7 +169,7 @@ class RandomRotation(object):
         # center = center + origin_rot - origin_org  # because reshape=True
 
         landmarks_rot = landmarks - origin_org
-        landmarks_rot = np.dot(landmarks_rot, manual_theta_inv)[:, :2]
+        landmarks_rot = np.asarray(np.dot(landmarks_rot, manual_theta_inv)[:, :2])
         landmarks_rot = landmarks_rot + origin_rot
         # display_landmarks(image, landmarks.cpu().numpy(), [], "Original")
         # display_landmarks(image_rot, landmarks_rot.cpu().numpy(), [], "Manually Rotated")
@@ -192,40 +192,20 @@ class LandmarkCrop(object):
         bbox = utils.bounding_box(landmarks)
         center, scale = utils.center_scale_from_bbox(bbox)
         image = utils.crop(image, center, scale, self.resolution)
-        landmarks = landmarks - [bbox[0], bbox[1]]
+        landmarks = landmarks - (bbox[0], bbox[1])
         sample['image'] = image
         sample['landmarks'] = landmarks
 
-        if len(sample['image_org']):
+        if 'image_org' in sample:    # if RandomRotation, crop around the rotated image
             image, landmarks = sample['image_org'], sample['landmarks_org']
             bbox = utils.bounding_box(landmarks)
             center, scale = utils.center_scale_from_bbox(bbox)
             image = utils.crop(image, center, scale, self.resolution)
-            landmarks = landmarks - [bbox[0], bbox[1]]
+            landmarks = landmarks - (bbox[0], bbox[1])
             sample['image_org'] = image
             sample['landmarks_org'] = landmarks
 
         return sample
-
-
-class LandmarkCropWithOriginal(object):
-    def __init__(self, output_size):
-        assert isinstance(output_size, (int, tuple))
-        if isinstance(output_size, int):
-            self.output_size = (output_size, output_size)
-        else:
-            assert len(output_size) == 2
-            self.output_size = output_size
-
-    def __call__(self, sample):
-        image, landmarks = sample['image'], sample['landmarks']
-        original_image = image
-
-        center, scale = utils.bounding_box(utils.center_scale_from_bbox(landmarks))
-        image = utils.crop(image, center, scale, 256)
-        image = torch.from_numpy(image.transpose(
-            (2, 0, 1))).float().div(255.0).unsqueeze_(0)
-        return {'image': image, 'original': original_image, 'landmarks': landmarks}
 
 
 class CreateHeatmaps(object):
@@ -235,14 +215,14 @@ class CreateHeatmaps(object):
 
     def __call__(self, sample):
         landmarks = sample['landmarks']
-        center, scale = utils.bounding_box(utils.center_scale_from_bbox(landmarks))
-        heatmaps = torch.Tensor(1, self.n_features, self.output_size, self.output_size)
+        center, scale = utils.center_scale_from_bbox(utils.bounding_box(landmarks))
         heatmap = np.zeros((self.n_features, self.output_size, self.output_size))
         for i in range(self.n_features):
-            heatmap[i] = utils.draw_gaussian(heatmap[i], utils.transform(landmarks[i], center, scale, self.output_size), 1)
-        heatmaps = torch.from_numpy(heatmap).view(1, self.n_features, self.output_size, self.output_size).float()
+            new_pts = utils.transform(landmarks[i], center, scale, self.output_size)
+            heatmap[i] = utils.draw_gaussian(heatmap[i], new_pts, 1)
+        sample['heatmaps'] = torch.from_numpy(heatmap).view(self.n_features, self.output_size, self.output_size).float()
 
-        return {'image': sample['image'], 'landmarks': heatmaps}
+        return sample
 
 
 class RandomCrop(object):
@@ -284,7 +264,7 @@ class ToTensor(object):
         for key in sample:
             if key in ['image', 'image_org']:
                 sample[key] = torchvision.transforms.ToTensor()(sample[key])
-            elif key == 'filename':
+            elif key in  ['filename', 'heatmaps']:
                 continue
             else:
                 sample[key] = torch.from_numpy(sample[key]).float()
@@ -318,15 +298,15 @@ class FaceLandmarksDataset(Dataset):
 
         filename = self.images_list[idx]
         basename = os.path.splitext(filename)[0]
-        if self.type == 0:    # land110
-            landmarks = np.loadtxt(basename + '.land', skiprows=1)
-            landmarks = np.vstack((landmarks[0:32:2], landmarks[32:64], landmarks[88:108]))
-        elif self.type == 1:  # 8W
-            landmarks = np.loadtxt(basename + '.pts')
-        elif self.type == 2:  # 300W, lfpw
+        if self.type == 1:  # 300W, lfpw
             landmarks = np.loadtxt(basename + '.pts', skiprows=3, comments='}')
+        elif self.type == 2:  # land110
+            landmarks = np.loadtxt(basename + '.land', skiprows=1)
+            # landmarks = np.vstack((landmarks[0:32:2], landmarks[32:64], landmarks[88:108]))
         elif self.type == 3:  # FEI
             landmarks = np.ones((68,2))
+        elif self.type == 4:  # 8W
+            landmarks = np.loadtxt(basename + '.pts')
 
         sample = {'image': image, 'landmarks': landmarks, 'filename': filename}
         if self.transforms:

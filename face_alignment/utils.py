@@ -1,7 +1,7 @@
 from __future__ import print_function
 import os
 import sys
-import time
+import scipy
 import torch
 import math
 import numpy as np
@@ -453,13 +453,13 @@ def plot_landmarks_on_image(calculated, expected, frame, num_landmarks=68):
         expected_point_color = (0,0,255)
         calculated_point_color = (255,255,255)
         # for landmark in landmarks:
-        cv2.circle(frame, (int(expected[0][i][0]), int(expected[0][i][1])),
+        cv2.circle(frame, (int(expected[i][0]), int(expected[i][1])),
                    1, expected_point_color, thickness=2)
-        cv2.circle(frame, (int(calculated[0][i][0]), int(calculated[0][i][1])),
+        cv2.circle(frame, (int(calculated[i][0]), int(calculated[i][1])),
                    1, calculated_point_color, thickness=2)
         cv2.line(frame,
-                 (int(expected[0][i][0]), int(expected[0][i][1])),
-                 (int(calculated[0][i][0]), int(calculated[0][i][1])),
+                 (int(expected[i][0]), int(expected[i][1])),
+                 (int(calculated[i][0]), int(calculated[i][1])),
                  (255,255,255),
                  thickness=1,
                  lineType=1)
