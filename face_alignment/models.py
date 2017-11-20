@@ -317,10 +317,14 @@ class STN(nn.Module):
         outp = F.grid_sample(inp, grid)                             # "Rotate" the image by applying the grid
         return outp, landmarks, theta
 
-class ChainedModel(nn.Module):
 
-    def __init__(self, stack_size):
-        self.fan = FAN(stack_size)
+class STEFAN(nn.Module):
+
+    def __init__(self, num_modules=1, num_landmarks=68):
+        super(STEFAN, self).__init__()
+        self.num_modules = num_modules
+        self.num_landmarks = num_landmarks
+        self.fan = FAN(num_modules, num_landmarks)
         self.stn = STN()
 
     def forward(self, inp):
