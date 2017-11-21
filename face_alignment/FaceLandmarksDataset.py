@@ -181,7 +181,7 @@ class LandmarkCrop(object):
         bbox = utils.bounding_box(landmarks)
         center, scale = utils.center_scale_from_bbox(bbox)
         image = utils.crop(image, center, scale, self.resolution)
-        landmarks = landmarks - (bbox[0], bbox[1])
+        # landmarks = landmarks - (bbox[0], bbox[1])
         sample['image'] = image
         sample['landmarks'] = landmarks
 
@@ -190,7 +190,7 @@ class LandmarkCrop(object):
             bbox = utils.bounding_box(landmarks)
             center, scale = utils.center_scale_from_bbox(bbox)
             image = utils.crop(image, center, scale, self.resolution)
-            landmarks = landmarks - (bbox[0], bbox[1])
+            # landmarks = landmarks - (bbox[0], bbox[1])
             sample['image_rot'] = image
             sample['landmarks_rot'] = landmarks
 

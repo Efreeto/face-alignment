@@ -328,5 +328,18 @@ class STEFAN(nn.Module):
         self.stn = STN()
 
     def forward(self, inp):
-        outp, landmarks, theta = self.stn(inp)
-        return self.fan(outp)
+        frontal_img, landmarks, theta = self.stn(inp)
+        hm_rot = self.fan(frontal_img)
+
+        theta_inv = Variable(torch.eye(3))
+        if theta.is_cuda:
+            theta_inv = theta_inv.cuda()
+        theta_inv[0:2] = theta[0]
+        theta_inv = torch.inverse(theta_inv)[0:2].repeat(theta.data.shape[0], 1, 1)
+
+        grid = nn.functional.affine_grid(theta_inv, torch.Size([theta.data.shape[0], 68, 64, 64]))
+        hm = []
+        for i in range(self.num_modules):
+            hm.append(nn.functional.grid_sample(hm_rot[i], grid))
+
+        return hm, frontal_img, hm_rot

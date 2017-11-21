@@ -410,32 +410,27 @@ def write2file(image, filename):
     np.savetxt(filename+"_2.txt", image[...,2], fmt='%i')
 
 
-def display_landmarks(image, landmarks, gt_landmarks, fig_title):
-    plt.figure(fig_title)
-    plt.clf()
-    plt.imshow(image)
+def display_landmarks(fig, landmarks, gt_landmarks):
     if len(gt_landmarks):
-        plt.plot(gt_landmarks[0:17,0] ,gt_landmarks[0:17,1], marker='o',markersize=4,linestyle='-',color='b',lw=1)
-        plt.plot(gt_landmarks[17:22,0],gt_landmarks[17:22,1],marker='o',markersize=4,linestyle='-',color='b',lw=1)
-        plt.plot(gt_landmarks[22:27,0],gt_landmarks[22:27,1],marker='o',markersize=4,linestyle='-',color='b',lw=1)
-        plt.plot(gt_landmarks[27:31,0],gt_landmarks[27:31,1],marker='o',markersize=4,linestyle='-',color='b',lw=1)
-        plt.plot(gt_landmarks[31:36,0],gt_landmarks[31:36,1],marker='o',markersize=4,linestyle='-',color='b',lw=1)
-        plt.plot(gt_landmarks[36:42,0],gt_landmarks[36:42,1],marker='o',markersize=4,linestyle='-',color='b',lw=1)
-        plt.plot(gt_landmarks[42:48,0],gt_landmarks[42:48,1],marker='o',markersize=4,linestyle='-',color='b',lw=1)
-        plt.plot(gt_landmarks[48:60,0],gt_landmarks[48:60,1],marker='o',markersize=4,linestyle='-',color='b',lw=1)
-        plt.plot(gt_landmarks[60:68,0],gt_landmarks[60:68,1],marker='o',markersize=4,linestyle='-',color='b',lw=1)
+        fig.plot(gt_landmarks[0:17,0] ,gt_landmarks[0:17,1], marker='o',markersize=4,linestyle='-',color='b',lw=1)
+        fig.plot(gt_landmarks[17:22,0],gt_landmarks[17:22,1],marker='o',markersize=4,linestyle='-',color='b',lw=1)
+        fig.plot(gt_landmarks[22:27,0],gt_landmarks[22:27,1],marker='o',markersize=4,linestyle='-',color='b',lw=1)
+        fig.plot(gt_landmarks[27:31,0],gt_landmarks[27:31,1],marker='o',markersize=4,linestyle='-',color='b',lw=1)
+        fig.plot(gt_landmarks[31:36,0],gt_landmarks[31:36,1],marker='o',markersize=4,linestyle='-',color='b',lw=1)
+        fig.plot(gt_landmarks[36:42,0],gt_landmarks[36:42,1],marker='o',markersize=4,linestyle='-',color='b',lw=1)
+        fig.plot(gt_landmarks[42:48,0],gt_landmarks[42:48,1],marker='o',markersize=4,linestyle='-',color='b',lw=1)
+        fig.plot(gt_landmarks[48:60,0],gt_landmarks[48:60,1],marker='o',markersize=4,linestyle='-',color='b',lw=1)
+        fig.plot(gt_landmarks[60:68,0],gt_landmarks[60:68,1],marker='o',markersize=4,linestyle='-',color='b',lw=1)
     if len(landmarks):
-        plt.plot(landmarks[0:17,0],landmarks[0:17,1],marker='o',markersize=6,linestyle='-',color='w',lw=2)
-        plt.plot(landmarks[17:22,0],landmarks[17:22,1],marker='o',markersize=6,linestyle='-',color='w',lw=2)
-        plt.plot(landmarks[22:27,0],landmarks[22:27,1],marker='o',markersize=6,linestyle='-',color='w',lw=2)
-        plt.plot(landmarks[27:31,0],landmarks[27:31,1],marker='o',markersize=6,linestyle='-',color='w',lw=2)
-        plt.plot(landmarks[31:36,0],landmarks[31:36,1],marker='o',markersize=6,linestyle='-',color='w',lw=2)
-        plt.plot(landmarks[36:42,0],landmarks[36:42,1],marker='o',markersize=6,linestyle='-',color='w',lw=2)
-        plt.plot(landmarks[42:48,0],landmarks[42:48,1],marker='o',markersize=6,linestyle='-',color='w',lw=2)
-        plt.plot(landmarks[48:60,0],landmarks[48:60,1],marker='o',markersize=6,linestyle='-',color='w',lw=2)
-        plt.plot(landmarks[60:68,0],landmarks[60:68,1],marker='o',markersize=6,linestyle='-',color='w',lw=2)
-    plt.axis('off')
-    plt.show(block=False)
+        fig.plot(landmarks[0:17,0],landmarks[0:17,1],marker='o',markersize=6,linestyle='-',color='r',lw=2)
+        fig.plot(landmarks[17:22,0],landmarks[17:22,1],marker='o',markersize=6,linestyle='-',color='r',lw=2)
+        fig.plot(landmarks[22:27,0],landmarks[22:27,1],marker='o',markersize=6,linestyle='-',color='r',lw=2)
+        fig.plot(landmarks[27:31,0],landmarks[27:31,1],marker='o',markersize=6,linestyle='-',color='r',lw=2)
+        fig.plot(landmarks[31:36,0],landmarks[31:36,1],marker='o',markersize=6,linestyle='-',color='r',lw=2)
+        fig.plot(landmarks[36:42,0],landmarks[36:42,1],marker='o',markersize=6,linestyle='-',color='r',lw=2)
+        fig.plot(landmarks[42:48,0],landmarks[42:48,1],marker='o',markersize=6,linestyle='-',color='r',lw=2)
+        fig.plot(landmarks[48:60,0],landmarks[48:60,1],marker='o',markersize=6,linestyle='-',color='r',lw=2)
+        fig.plot(landmarks[60:68,0],landmarks[60:68,1],marker='o',markersize=6,linestyle='-',color='r',lw=2)
 
 times = {}
 def tic(timename):
