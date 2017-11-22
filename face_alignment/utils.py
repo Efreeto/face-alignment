@@ -355,10 +355,9 @@ def landmark_diff(lm1, lm2, write_diffs=False):
     max_distance = distances.max()/norm
     avg_distance = distances.sum()/norm
 
-    return max_distance, avg_distance
+    return max_distance, avg_distance, distances/norm
 
-
-def rotate(origin, point, angle):
+def rotate(origin, point, angle, invert_y=True):
     """
     Rotate a point counterclockwise by a given angle around a given origin.
 
@@ -370,11 +369,14 @@ def rotate(origin, point, angle):
     px, py = point
     if px is -1 and py is -1:
         return px, py
-    # flip y axis
+
     ox = float(ox)
     oy = float(oy)
-    oy = -oy
-    py = -py
+
+    if invert_y:
+        # flip y axis
+        oy = -oy
+        py = -py
 
     s = math.sin(angle)
     c = math.cos(angle)
@@ -390,7 +392,8 @@ def rotate(origin, point, angle):
     # translate point back:
     qx = xnew + ox
     qy = ynew + oy
-    qy = -qy
+    if invert_y:
+        qy = -qy
     return qx, qy
 
 
@@ -401,6 +404,79 @@ def transformation_matrix(rotation_angle):
     c, s = np.cos(theta), np.sin(theta)
     mat = np.matrix('{} {} 0; {} {} 0'.format(c, -s, s, c), np.float32)
     return mat
+
+
+def gaussian2(x, y, theta=0, center=(0,0), sigma=0.25, sigma_large=1):
+    xnew, ynew = rotate(center, (x,y), theta, invert_y=False)
+
+    sigma_vert = sigma
+    sigma_horiz = sigma
+    if xnew > center[0]:
+        sigma_horiz = sigma_large
+    return math.exp(-(math.pow((xnew - center[0]) / (
+        sigma_horiz), 2) / 2.0 + math.pow((ynew - center[1]) / (sigma_vert), 2) / 2.0))
+
+
+def draw_gaussian2(image, points, sigma):
+    num_points = points.shape[0]
+    if num_points == 3:
+        point = points[1]
+        point1 = points[0]
+        point2 = points[2]
+        theta1 = math.atan2((point[1]-point1[1]), (point1[0] - point[0])) * 180 / math.pi
+        theta2 = math.atan2((point[1]-point2[1]), (point2[0] - point[0])) * 180 / math.pi
+    elif num_points == 2:
+        point = points[1]
+        point1 = points[0]
+        theta1 = math.atan2((point[1]-point1[1]), (point1[0] - point[0])) * 180 / math.pi
+    else:
+        point = points[0]
+
+    # Check if the gaussian is inside
+    ul = [math.floor(point[0] - 4 * sigma), math.floor(point[1] - 4 * sigma)]
+    br = [math.floor(point[0] + 4 * sigma), math.floor(point[1] + 4 * sigma)]
+    # ul = [math.floor(point[0] - 6), math.floor(point[1] - 6)]
+    # br = [math.floor(point[0] + 6), math.floor(point[1] + 6)]
+    if (ul[0] > image.shape[1] or ul[1] >
+            image.shape[0] or br[0] < 1 or br[1] < 1):
+        return image
+
+    # size = 21
+    size = 6 * sigma + 1
+    size=9
+    # size=13
+    # sigma = 1.75
+    # size = 501
+    # sigma=50
+    sigma2 = sigma*3
+    factor=1.5
+    g = np.zeros((size, size))
+
+    center = ((size-1)/2, (size-1)/2)
+    for i in range(size):
+        for j in range(size):
+            if num_points == 3:
+                g[j][i] = (gaussian2(i, j, theta1, center, sigma=sigma*factor, sigma_large=sigma2*factor) + gaussian2(i,j, theta2, center, sigma=sigma*factor,sigma_large=sigma2*factor))/2
+            elif num_points == 2:
+                g[j][i] = gaussian2(i, j, theta1, center, sigma=sigma*factor, sigma_large=sigma2*factor)
+
+    """
+    from PIL import Image
+    im = Image.fromarray(g * 255)
+    im.show()
+    """
+
+    g_x = [int(max(1, -ul[0])), int(min(br[0], image.shape[1])) -
+           int(max(1, ul[0])) + int(max(1, -ul[0]))]
+    g_y = [int(max(1, -ul[1])), int(min(br[1], image.shape[0])) -
+           int(max(1, ul[1])) + int(max(1, -ul[1]))]
+    img_x = [int(max(1, ul[0])), int(min(br[0], image.shape[1]))]
+    img_y = [int(max(1, ul[1])), int(min(br[1], image.shape[0]))]
+    assert (g_x[0] > 0 and g_y[1] > 0)
+    image[img_y[0] - 1:img_y[1], img_x[0] - 1:img_x[1]
+          ] = image[img_y[0] - 1:img_y[1], img_x[0] - 1:img_x[1]] + g[g_y[0] - 1:g_y[1], g_x[0] - 1:g_x[1]]
+    image[image > 1] = 1
+    return image
 
 
 def write2file(image, filename):

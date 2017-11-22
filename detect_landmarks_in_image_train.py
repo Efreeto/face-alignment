@@ -35,11 +35,11 @@ parser.add_argument('--arch', '-a', metavar='ARCH', default='FAN',
                     help='model architecture: ' +
                         ' | '.join(model_names) +
                         ' (default: FAN)')
-parser.add_argument('-j', '--workers', default=8, type=int, metavar='N',
+parser.add_argument('-w', '--workers', default=8, type=int, metavar='N',
                     help='number of data loading workers (default: 8)')
-parser.add_argument('--epochs', default=10, type=int, metavar='N',
+parser.add_argument('-ne', '--epochs', default=10, type=int, metavar='N',
                     help='number of total epochs to run')
-parser.add_argument('--start-epoch', default=0, type=int, metavar='N',
+parser.add_argument('-se', '--start-epoch', default=0, type=int, metavar='N',
                     help='manual epoch number (useful on restarts)')
 parser.add_argument('-b', '--batch-size', default=10, type=int,
                     metavar='N', help='mini-batch size (default: 10)')
@@ -47,13 +47,13 @@ parser.add_argument('-lr', '--learning-rate', default=0.00025, type=float,
                     metavar='LR', help='initial learning rate')
 parser.add_argument('-wd', '--weight-decay', default=0.0, type=float,
                     metavar='WD', help='weight decay (L2 penalty)')
-parser.add_argument('--resume', dest='resume', action='store_true',
+parser.add_argument('-r', '--resume', dest='resume', action='store_true',
                     help= 'resume training from checkpoint file in logging directory')
 parser.add_argument('-e', '--evaluate', dest='evaluate', action='store_true',
                     help='evaluate model on validation set')
-parser.add_argument('--loss-type', default='MSELoss', type=str, metavar='PATH',
+parser.add_argument('-lt', '--loss-type', default='MSELoss', type=str, metavar='PATH',
                     help='loss function (default: MSELoss)')
-parser.add_argument('--num-FAN-modules', default=4, type=int, metavar='PATH',
+parser.add_argument('-nf', '--num-FAN-modules', default=4, type=int, metavar='PATH',
                     help='number of FAN modules (default: 4)')
 parser.add_argument('-nl', '--num-landmarks', default=68, type=int, metavar='PATH',
                     help='number of landmarks (default: 68)')
@@ -61,9 +61,11 @@ parser.add_argument('-l', '--log-dir', default='train_log', type=str, metavar='P
                     help='logging directory (default: train_log)')
 parser.add_argument('-lp', '--log-progress', default=True, type=bool,
                     help='log intermediate loss values to csv (default: True)')
-
+parser.add_argument('-ef', '--evaluate-on-finish', default=True, type=bool,
+                    help='evaluate model on test set after training finishes (default: True)')
 
 use_gpu = torch.cuda.is_available()
+
 
 def weights_init(m):
     """
@@ -291,7 +293,7 @@ def train_model(model,
                 }, epoch_loss <= best_loss, dir=results_dir)
 
         if log_progress:
-            progress_file.write('{}, {}, {}, {}, {}\n'.format(epoch, optimizer.param_groups[0]['lr'], dataloaders[phase].batch_size, trainset_loss, testset_loss))
+            progress_file.write('{}, {}, {}, {}, {}\n'.format(epoch, optimizer.param_groups[0]['lr'], dataloaders['trainset'].batch_size, trainset_loss, testset_loss))
             progress_file.flush()
 
     time_elapsed = time.time() - since
@@ -314,7 +316,7 @@ def save_checkpoint(state, is_best, dir=".", filename='checkpoint.pth.tar'):
         copyfile(checkpoint_path, os.path.join(dir, 'model_best.pth.tar'))
 
 
-def evaluate_model(model, dataloader, num_images=999, results_dir='test_out'):
+def evaluate_model(model, dataset, num_images=999, results_dir='test_out', segment="testset"):
     """
     apply the model to a selection of test data, and save images with overlayed predicted landmarks
     :param model: model for prediction
@@ -327,11 +329,14 @@ def evaluate_model(model, dataloader, num_images=999, results_dir='test_out'):
     running_loss_max = 0.0
     running_loss_sum = 0.0
 
-    errors_file = open(os.path.join(results_dir, "errors.csv"), "w")
-    errors_file.write("max_error,sum_error\n")
+    dataloader = DataLoader(dataset[segment], shuffle=False, num_workers=1)
+    errors_file = open(os.path.join(results_dir, "errors_{}.csv".format(segment)), "w")
+    errors_file.write("file_name,max_error,sum_error\n")
 
     if not os.path.exists(results_dir):
         os.makedirs(results_dir)
+
+    distances_sum = np.zeros(model.num_landmarks)
 
     for i, data in enumerate(dataloader):
         inputs, filename, landmarks = data['image'], data['filename'][0], data['landmarks'][0].cpu().numpy()
@@ -350,24 +355,28 @@ def evaluate_model(model, dataloader, num_images=999, results_dir='test_out'):
         out_landmarks = out_landmarks[0].numpy()
 
         images_so_far += 1
-        max_error, sum_error = utils.landmark_diff(landmarks, out_landmarks)
-        errors_file.write("{},{}\n".format(max_error, sum_error))
+        max_error, sum_error, errors = utils.landmark_diff(landmarks, out_landmarks)
+        distances_sum += errors
+        errors_file.write("{}_{}.png,{},{}\n".format(segment, i, max_error, sum_error))
         running_loss_max += max_error
         running_loss_sum += sum_error
         errorText = "MaxErr:{:4.3f} ".format(max_error)
         cv2.putText(original_input, errorText, (0, 50), cv2.FONT_HERSHEY_SIMPLEX, 1., (0, 0, 255), 2)
         utils.plot_landmarks_on_image(out_landmarks, landmarks, original_input, model.num_landmarks)
-        cv2.imwrite("{}/lmk{}.png".format(results_dir,i), original_input)
+        cv2.imwrite("{}/{}_{}.png".format(results_dir, segment, i), original_input)
 
         # STEFAN
         def TensorToImg(tensor):
             return tensor.mul(255.0).cpu().numpy().transpose(1, 2, 0)
         frontal_img = TensorToImg(frontal[0].data)
-        frontal_img = cv2.cvtColor( frontal_img, cv2.COLOR_RGB2BGR)
-        cv2.imwrite("{}/lmk{}_frontal.png".format(results_dir,i), frontal_img)
+        frontal_img = cv2.cvtColor(frontal_img, cv2.COLOR_RGB2BGR)
+        cv2.imwrite("{}/{}_{}_frontal.png".format(results_dir, segment, i), frontal_img)
 
     avg_loss_max = running_loss_max / images_so_far
     print('Loss: {:4f}'.format(avg_loss_max))
+    landmark_errors_file = open(os.path.join(results_dir, "landmark_errors_{}.csv".format(segment)), "w")
+    landmark_errors_file.write(",".join(map(str, distances_sum)))
+
 
 def newFAN(num_modules=4, num_landmarks=68):
     """ Create a new FAN model with randomized weights """
@@ -384,15 +393,17 @@ def main():
     args.data = os.path.expanduser(args.data)
     args.log_dir = os.path.expanduser(args.log_dir)
 
+    dataset_transform_map = {"trainset":"train",
+                             "testset":"eval"}
     data_transforms = {
-        'trainset': transforms.Compose([
+        'train': transforms.Compose([
             # RandomRotation(40, 5),
             LandmarkCrop(480),
             CreateHeatmaps(n_features=args.num_landmarks),
             ToTensor()
         ]),
 
-        'testset': transforms.Compose([
+        'eval': transforms.Compose([
             # RandomRotation(40, 5),
             LandmarkCrop(480),
             CreateHeatmaps(n_features=args.num_landmarks),
@@ -400,26 +411,20 @@ def main():
         ]),
     }
     # data_transforms = {
-    #     'trainset': transforms.Compose([
-    #         FaceColorJitter(),
+    #     'train': transforms.Compose([
+    #         # FaceColorJitter(),
     #         RandomHorizFlip(),
-    #         RandomRotation(),
+    #         # RandomRotation(),
     #         LandmarkCrop(256),
-    #         CreateHeatmaps(n_features=args.num_landmarks),
-    #         ToTensor()
+    #         CreateHeatmaps2(n_features=args.num_landmarks)
     #     ]),
     #
-    #     'testset': transforms.Compose([
-    #         LandmarkCrop(256),
-    #         CreateHeatmaps(n_features=args.num_landmarks),
-    #         ToTensor()
+    #     'eval': transforms.Compose([
+    #         LandmarkCropWithOriginal(256)
     #     ]),
     # }
 
     datatype = 1 if args.num_landmarks == 68 else 2
-    dataset = {x: FaceLandmarksDataset(os.path.join(args.data, x),
-                                      transforms=data_transforms[x], type=datatype)
-              for x in ['trainset', 'testset']}
 
     optimizer_ft = None
     interval_scheduler = None
@@ -437,10 +442,18 @@ def main():
         model_ft = None
 
     if args.evaluate:
+        dataset_transform_map = {"trainset": "eval",
+                                 "testset": "eval"}
         model_ft.load_state_dict(torch.load(os.path.join(args.log_dir,'checkpoint.pth.tar'))['state_dict'])
-        dataloader = DataLoader(dataset['testset'], shuffle=False, num_workers=1)
-        evaluate_model(model_ft, dataloader, results_dir=args.log_dir)
+        dataset = {x: FaceLandmarksDataset(os.path.join(args.data, x),
+                                           transforms=data_transforms[dataset_transform_map[x]], type=datatype)
+                   for x in ['trainset', 'testset']}
+        evaluate_model(model_ft, dataset, results_dir=args.log_dir, segment='testset')
+        evaluate_model(model_ft, dataset, results_dir=args.log_dir, segment='trainset')
     else:
+        dataset = {x: FaceLandmarksDataset(os.path.join(args.data, x),
+                                           transforms=data_transforms[dataset_transform_map[x]], type=datatype)
+                   for x in ['trainset', 'testset']}
         if optimizer_ft == None:
             optimizer_ft = optim.RMSprop(model_ft.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay)
         if interval_scheduler == None:
@@ -457,6 +470,10 @@ def main():
 
         model_ft = train_model(model_ft, criterion, optimizer_ft, dataloaders, interval_scheduler,
                             num_epochs=args.epochs, results_dir=args.log_dir, resume=args.resume, log_progress=args.log_progress)
+
+        if args.evaluate_on_finish:
+            model_ft.load_state_dict(torch.load(os.path.join(args.log_dir, 'checkpoint.pth.tar'))['state_dict'])
+            evaluate_model(model_ft, dataset, results_dir=args.log_dir)
 
 
 if __name__ == '__main__':

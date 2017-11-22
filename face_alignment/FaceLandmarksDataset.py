@@ -213,6 +213,73 @@ class CreateHeatmaps(object):
 
         return sample
 
+class CreateHeatmaps2(object):
+    def __init__(self, output_size=64, n_features=68):
+        self.output_size = output_size
+        self.n_features = n_features
+        if self.n_features==68:
+            self.neigbor_list = [[2],[1,3],[2,4],[3,5],[4,6],[5,7],[6,8],[7,9],[8,10],
+                                 [9,11],[10,12],[11,13],[12,14],[13,15],[14,16],[15,17],
+                                 [16], [19], [18,20], [19,21], [20,22], [21],[24],[23,25],
+                                 [24,26],[25,27],[26],[29],[28,30],[29,31],[30,34],[33],
+                                 [32,34],[33,35],[34,36],[35],[],[37,39],[38,40],[],[40,42],
+                                 [37,41],[],[43,45],[44,46],[],[46,48],[43,47],[],[49,51],
+                                 [50,52],[51,53],[52,54],[53,55],[],[55,57],[56,58],[57,59],
+                                 [58,60],[59,49],[49],[61,63],[62,64],[63,65],[55],[65,67],
+                                 [66,68],[61,67]]
+        elif self.n_features==108:
+            self.neigbor_list = [[2],[1,3],[2,4],[3,5],[4,6],[5,7],[6,8],[7,9],[8,10],
+                                 [9,11],[10,12],[11,13],[12,14],[13,15],[14,16],[15,17],
+                                 [16,18],[17,19],[18,20],[19,21],[20,22],[21,23],[22,24],
+                                 [23,25],[24,26],[25,27],[26,28],[27,29],[28,30],[29,31],
+                                 [30,32],[31,33],[32],[],[34,36],[35,37],[36,38],[], [39,41],
+                                 [40,42],[41,43], [],[45],[44,46], [45,47], [46], [49],[48,50],
+                                 [],[50,52],[51],[],[53,55],[54,56],[],[56,58], [],[],[59,61],
+                                 [60,62],[],[62,64],[],[],[65,67],[66,68],[],[],[69,71],[70,72],[]
+                                 [54,55],[58,57],[],[60,61],[63,64],[],[81],[82],[79,83],[80,84],
+                                 [81,85],[82,86],[83,87],[84,88],[48],[52],[],[89,91],[90,92],
+                                 [91,93],[92,94],[93,95],[],[95,97],[96,98],[97,99],[98,100],[89,99],
+                                 [],[101,103],[102,104],[103,105],[],[105,107],[106,108],[101,107]]
+
+    def __call__(self, sample):
+        landmarks = sample['landmarks']
+        center, scale = center_scale_from_landmark(landmarks)
+        heatmap = np.zeros((self.n_features, self.output_size, self.output_size))
+        foo = np.zeros((self.output_size, self.output_size))
+
+        for i in range(self.n_features):
+            neighbors = self.get_neighbors(i)
+            num_neighbors = len(neighbors)
+            if num_neighbors == 0:
+                heatmap[i] = utils.draw_gaussian(heatmap[i], utils.transform(landmarks[i], center, scale, self.output_size), 1)
+                foo = utils.draw_gaussian(foo, utils.transform(landmarks[i], center, scale, self.output_size), 1)
+            else:
+                if num_neighbors == 2:
+                    points = np.zeros((3,2))
+                    points[0] = utils.transform(landmarks[neighbors[0]-1], center, scale, self.output_size).numpy()
+                    points[1] = utils.transform(landmarks[i], center, scale, self.output_size).numpy()
+                    points[2] = utils.transform(landmarks[neighbors[1]-1], center, scale, self.output_size).numpy()
+                else:
+                    points = np.zeros((2,2))
+                    points[0] = utils.transform(landmarks[neighbors[0]-1], center, scale, self.output_size).numpy()
+                    points[1] = utils.transform(landmarks[i], center, scale, self.output_size).numpy()
+
+                heatmap[i] = utils.draw_gaussian2(heatmap[i], points, 1)
+                # foo = utils.draw_gaussian(foo, utils.transform(landmarks[i], center, scale, self.output_size), 1)
+                foo = utils.draw_gaussian2(foo, points, 1)
+        """
+        from PIL import Image
+        im = Image.fromarray(foo*255)
+        im.show()
+        """
+
+        heatmaps = torch.from_numpy(heatmap).view(1, self.n_features, self.output_size, self.output_size).float()
+
+        return {'image': sample['image'], 'landmarks': heatmaps}
+
+    def get_neighbors(self, landmark):
+        return self.neigbor_list[landmark]
+
 
 class RandomCrop(object):
     """Crop randomly the image in a sample.
