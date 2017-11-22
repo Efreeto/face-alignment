@@ -166,9 +166,12 @@ def train_model(model,
                 outputs = model(inputs)
 
                 if loss_hm:
-                    out_heatmaps = outputs[0]
-                    out_frontal_img = outputs[1]
-                    out_hm_rot = outputs[2]
+                    if 1:
+                        out_heatmaps = outputs[0]
+                        out_frontal_img = outputs[1]
+                        out_hm_rot = outputs[2]
+                    else:
+                        out_heatmaps = outputs
                     heatmaps = data['heatmaps']
                     if use_manual_rotation:
                         heatmaps = torch.cat((heatmaps, heatmaps))
@@ -209,32 +212,37 @@ def train_model(model,
                     #     pts, pts_img = utils.get_preds_fromhm(outputs[-1].cpu().data, center, scale)
                     #     loss = utils.landmark_diff(landmarks.cpu().numpy(), pts_img[0].numpy())
 
-                    if display_mode and phase == 'trainset' and j == 10:
+                    if display_mode and phase == 'trainset' and j in [2, 3]:
                         import matplotlib.pyplot as plt
                         def TensorToImg(tensor):
                             return tensor.cpu().numpy().transpose(1, 2, 0)
 
-                        idx = 0
+                        idx = 2
                         image = io.imread(data['filename'][idx])
                         input_org = TensorToImg(data['image'][idx])
                         input_rot = TensorToImg(out_frontal_img[idx].data)
+                        landmarks = data['landmarks'][idx].cpu().numpy()
+                        bbox = utils.bounding_box(landmarks)
+                        center, scale = utils.center_scale_from_bbox(bbox)
 
                         fig = plt.figure(figsize=(9, 6), tight_layout=True)
                         ax = fig.add_subplot(1, 3, 1)
                         ax.axis('off')
                         ax.imshow(image)
+                        preds, preds_orig = utils.get_preds_fromhm(out_heatmaps[-1][idx].cpu().data.unsqueeze(0), center, scale)
+                        preds_image = preds_orig[0].numpy()
+                        utils.display_landmarks(ax, preds_image, landmarks)
                         ax = fig.add_subplot(2, 3, 2)
                         ax.axis('off')
                         ax.imshow(input_org)
-                        center, scale = utils.center_scale_from_bbox(utils.bounding_box(data['landmarks'][idx]))
-                        preds, preds_orig = utils.get_preds_fromhm(out_heatmaps[-1][idx].cpu().data.unsqueeze(0), center, scale)
-                        utils.display_landmarks(ax, preds_orig[0].numpy(), [])
+                        preds_org = preds[0].numpy() * 8.0
+                        utils.display_landmarks(ax, preds_org, [])
                         ax = fig.add_subplot(2, 3, 3)
                         ax.axis('off')
                         ax.imshow(input_rot)
-                        center, scale = utils.center_scale_from_bbox(utils.bounding_box(data['landmarks'][idx]))
                         preds, preds_orig = utils.get_preds_fromhm(out_hm_rot[-1][idx].cpu().data.unsqueeze(0), center, scale)
-                        utils.display_landmarks(ax, preds_orig[0].numpy(), [])
+                        preds_rot = preds[0].numpy() * 4.0
+                        utils.display_landmarks(ax, preds_rot, [])
 
                         if use_manual_rotation:
                             idx_rot = idx + int(data['theta'].shape[0])
@@ -291,6 +299,9 @@ def train_model(model,
         time_elapsed // 60, time_elapsed % 60))
     print('Best val Loss: {:.4f}'.format(best_loss))
 
+    if display_mode:
+        plt.show(block=True)
+
     # load best model weights
     model.load_state_dict(best_model_wts)
     return model
@@ -330,8 +341,10 @@ def evaluate_model(model, dataloader, num_images=999, results_dir='test_out'):
             inputs = inputs.cuda()
         inputs = Variable(inputs)
 
-        outputs = model(inputs)
-        outputs = outputs[0]    # STEFAN
+        # outputs = model(inputs)
+        stefan_outputs = model(inputs)    # STEFAN
+        outputs = stefan_outputs[0]    # STEFAN
+        frontal = stefan_outputs[1]    # STEFAN
         center, scale = utils.center_scale_from_bbox(utils.bounding_box(landmarks))
         _, out_landmarks = utils.get_preds_fromhm(outputs[-1].cpu().data, center, scale)
         out_landmarks = out_landmarks[0].numpy()
@@ -345,6 +358,13 @@ def evaluate_model(model, dataloader, num_images=999, results_dir='test_out'):
         cv2.putText(original_input, errorText, (0, 50), cv2.FONT_HERSHEY_SIMPLEX, 1., (0, 0, 255), 2)
         utils.plot_landmarks_on_image(out_landmarks, landmarks, original_input, model.num_landmarks)
         cv2.imwrite("{}/lmk{}.png".format(results_dir,i), original_input)
+
+        # STEFAN
+        def TensorToImg(tensor):
+            return tensor.mul(255.0).cpu().numpy().transpose(1, 2, 0)
+        frontal_img = TensorToImg(frontal[0].data)
+        frontal_img = cv2.cvtColor( frontal_img, cv2.COLOR_RGB2BGR)
+        cv2.imwrite("{}/lmk{}_frontal.png".format(results_dir,i), frontal_img)
 
     avg_loss_max = running_loss_max / images_so_far
     print('Loss: {:4f}'.format(avg_loss_max))
@@ -368,14 +388,14 @@ def main():
         'trainset': transforms.Compose([
             # RandomRotation(40, 5),
             LandmarkCrop(480),
-            CreateHeatmaps(),
+            CreateHeatmaps(n_features=args.num_landmarks),
             ToTensor()
         ]),
 
         'testset': transforms.Compose([
             # RandomRotation(40, 5),
             LandmarkCrop(480),
-            CreateHeatmaps(),
+            CreateHeatmaps(n_features=args.num_landmarks),
             ToTensor()
         ]),
     }
@@ -401,10 +421,18 @@ def main():
                                       transforms=data_transforms[x], type=datatype)
               for x in ['trainset', 'testset']}
 
+    optimizer_ft = None
+    interval_scheduler = None
+
     if args.arch == 'FAN':
         model_ft = newFAN(args.num_FAN_modules, args.num_landmarks)
     elif args.arch == 'STEFAN':
         model_ft = STEFAN(args.num_FAN_modules, args.num_landmarks)
+        optimizer_ft = optim.Adam([
+            {'params': model_ft.fan.parameters()},
+            {'params': model_ft.stn.parameters(), 'lr': 0.001, 'weight_decay': args.weight_decay}
+        ], lr=args.learning_rate)
+        interval_scheduler = lr_scheduler.ReduceLROnPlateau(optimizer_ft, patience=5, verbose=True)
     else:
         model_ft = None
 
@@ -413,9 +441,11 @@ def main():
         dataloader = DataLoader(dataset['testset'], shuffle=False, num_workers=1)
         evaluate_model(model_ft, dataloader, results_dir=args.log_dir)
     else:
-        optimizer_ft = optim.RMSprop(model_ft.parameters(), lr=args.lr, weight_decay=args.decay)
-        interval_scheduler = lr_scheduler.MultiStepLR(optimizer_ft,milestones=[15,30])
-        dataloaders = {'trainset': DataLoader(dataset['trainset'], shuffle=False, batch_size=args.batch_size, num_workers=args.workers),
+        if optimizer_ft == None:
+            optimizer_ft = optim.RMSprop(model_ft.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay)
+        if interval_scheduler == None:
+            interval_scheduler = lr_scheduler.MultiStepLR(optimizer_ft,milestones=[15,30])
+        dataloaders = {'trainset': DataLoader(dataset['trainset'], shuffle=True, batch_size=args.batch_size, num_workers=args.workers),
                        'testset': DataLoader(dataset['testset'], shuffle=False, batch_size=1, num_workers=1)}
 
         if args.loss_type is not 'MSELoss':

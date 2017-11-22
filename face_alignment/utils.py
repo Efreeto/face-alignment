@@ -1,12 +1,12 @@
 from __future__ import print_function
 import os
 import sys
+import time
 import scipy
 import torch
 import math
 import numpy as np
 import cv2
-import time
 
 from torch.autograd import Variable
 import matplotlib.pyplot as plt
@@ -127,7 +127,7 @@ def crop(image, center, scale, resolution=256.0):
     """ Crops the image around the center. Input is expected to be an np.ndarray """
     ul = transform([1, 1], center, scale, resolution, True)
     br = transform([resolution, resolution], center, scale, resolution, True)
-    pad = math.ceil(torch.norm((ul - br).float()) / 2.0 - (br[0] - ul[0]) / 2.0)
+    # pad = math.ceil(torch.norm((ul - br).float()) / 2.0 - (br[0] - ul[0]) / 2.0)
     if image.ndim > 2:
         newDim = np.array([br[1] - ul[1], br[0] - ul[0],
                            image.shape[2]], dtype=np.int32)
@@ -173,7 +173,7 @@ def get_preds_fromhm(hm, center=None, scale=None):
         hm.view(hm.size(0), hm.size(1), hm.size(2) * hm.size(3)), 2)
     preds = idx.view(idx.size(0), idx.size(1), 1).repeat(1, 1, 2).float()
     preds[..., 0].apply_(lambda x: (x - 1) % hm.size(3) + 1)
-    preds[..., 1].add_(-1).div_(hm.size(2)).floor().add_(1)
+    preds[..., 1].add_(-1).div_(hm.size(2)).floor_().add_(1)
 
     for i in range(preds.size(0)):
         for j in range(preds.size(1)):
@@ -185,7 +185,7 @@ def get_preds_fromhm(hm, center=None, scale=None):
                          int(pX) + 1] - hm_[int(pY),
                                             int(pX) - 1],
                      hm_[int(pY) + 1, int(pX)] - hm_[int(pY) - 1, int(pX)]])
-                preds[i, j].add(diff.sign().mul(.25))
+                preds[i, j].add_(diff.sign().mul(.25))
 
     preds.add_(1)
 
@@ -341,7 +341,7 @@ def flip(tensor, is_label=False):
         tensor = np.expand_dims(tensor, axis=0)
     tensor = torch.from_numpy(tensor)
     if was_cuda:
-       tensor = tensor.cuda()
+        tensor = tensor.cuda()
     return tensor
 
 
@@ -412,25 +412,25 @@ def write2file(image, filename):
 
 def display_landmarks(fig, landmarks, gt_landmarks):
     if len(gt_landmarks):
-        fig.plot(gt_landmarks[0:17,0] ,gt_landmarks[0:17,1], marker='o',markersize=4,linestyle='-',color='b',lw=1)
-        fig.plot(gt_landmarks[17:22,0],gt_landmarks[17:22,1],marker='o',markersize=4,linestyle='-',color='b',lw=1)
-        fig.plot(gt_landmarks[22:27,0],gt_landmarks[22:27,1],marker='o',markersize=4,linestyle='-',color='b',lw=1)
-        fig.plot(gt_landmarks[27:31,0],gt_landmarks[27:31,1],marker='o',markersize=4,linestyle='-',color='b',lw=1)
-        fig.plot(gt_landmarks[31:36,0],gt_landmarks[31:36,1],marker='o',markersize=4,linestyle='-',color='b',lw=1)
-        fig.plot(gt_landmarks[36:42,0],gt_landmarks[36:42,1],marker='o',markersize=4,linestyle='-',color='b',lw=1)
-        fig.plot(gt_landmarks[42:48,0],gt_landmarks[42:48,1],marker='o',markersize=4,linestyle='-',color='b',lw=1)
-        fig.plot(gt_landmarks[48:60,0],gt_landmarks[48:60,1],marker='o',markersize=4,linestyle='-',color='b',lw=1)
-        fig.plot(gt_landmarks[60:68,0],gt_landmarks[60:68,1],marker='o',markersize=4,linestyle='-',color='b',lw=1)
+        fig.plot(gt_landmarks[0:17,0], gt_landmarks[0:17,1], marker='o',markersize=1,linestyle='-',color='b',lw=0.5)
+        fig.plot(gt_landmarks[17:22,0],gt_landmarks[17:22,1],marker='o',markersize=1,linestyle='-',color='b',lw=0.5)
+        fig.plot(gt_landmarks[22:27,0],gt_landmarks[22:27,1],marker='o',markersize=1,linestyle='-',color='b',lw=0.5)
+        fig.plot(gt_landmarks[27:31,0],gt_landmarks[27:31,1],marker='o',markersize=1,linestyle='-',color='b',lw=0.5)
+        fig.plot(gt_landmarks[31:36,0],gt_landmarks[31:36,1],marker='o',markersize=1,linestyle='-',color='b',lw=0.5)
+        fig.plot(gt_landmarks[36:42,0],gt_landmarks[36:42,1],marker='o',markersize=1,linestyle='-',color='b',lw=0.5)
+        fig.plot(gt_landmarks[42:48,0],gt_landmarks[42:48,1],marker='o',markersize=1,linestyle='-',color='b',lw=0.5)
+        fig.plot(gt_landmarks[48:60,0],gt_landmarks[48:60,1],marker='o',markersize=1,linestyle='-',color='b',lw=0.5)
+        fig.plot(gt_landmarks[60:68,0],gt_landmarks[60:68,1],marker='o',markersize=1,linestyle='-',color='b',lw=0.5)
     if len(landmarks):
-        fig.plot(landmarks[0:17,0],landmarks[0:17,1],marker='o',markersize=6,linestyle='-',color='r',lw=2)
-        fig.plot(landmarks[17:22,0],landmarks[17:22,1],marker='o',markersize=6,linestyle='-',color='r',lw=2)
-        fig.plot(landmarks[22:27,0],landmarks[22:27,1],marker='o',markersize=6,linestyle='-',color='r',lw=2)
-        fig.plot(landmarks[27:31,0],landmarks[27:31,1],marker='o',markersize=6,linestyle='-',color='r',lw=2)
-        fig.plot(landmarks[31:36,0],landmarks[31:36,1],marker='o',markersize=6,linestyle='-',color='r',lw=2)
-        fig.plot(landmarks[36:42,0],landmarks[36:42,1],marker='o',markersize=6,linestyle='-',color='r',lw=2)
-        fig.plot(landmarks[42:48,0],landmarks[42:48,1],marker='o',markersize=6,linestyle='-',color='r',lw=2)
-        fig.plot(landmarks[48:60,0],landmarks[48:60,1],marker='o',markersize=6,linestyle='-',color='r',lw=2)
-        fig.plot(landmarks[60:68,0],landmarks[60:68,1],marker='o',markersize=6,linestyle='-',color='r',lw=2)
+        fig.plot(landmarks[0:17,0], landmarks[0:17,1], marker='o',markersize=2,linestyle='-',color='r',lw=1)
+        fig.plot(landmarks[17:22,0],landmarks[17:22,1],marker='o',markersize=2,linestyle='-',color='r',lw=1)
+        fig.plot(landmarks[22:27,0],landmarks[22:27,1],marker='o',markersize=2,linestyle='-',color='r',lw=1)
+        fig.plot(landmarks[27:31,0],landmarks[27:31,1],marker='o',markersize=2,linestyle='-',color='r',lw=1)
+        fig.plot(landmarks[31:36,0],landmarks[31:36,1],marker='o',markersize=2,linestyle='-',color='r',lw=1)
+        fig.plot(landmarks[36:42,0],landmarks[36:42,1],marker='o',markersize=2,linestyle='-',color='r',lw=1)
+        fig.plot(landmarks[42:48,0],landmarks[42:48,1],marker='o',markersize=2,linestyle='-',color='r',lw=1)
+        fig.plot(landmarks[48:60,0],landmarks[48:60,1],marker='o',markersize=2,linestyle='-',color='r',lw=1)
+        fig.plot(landmarks[60:68,0],landmarks[60:68,1],marker='o',markersize=2,linestyle='-',color='r',lw=1)
 
 times = {}
 def tic(timename):
