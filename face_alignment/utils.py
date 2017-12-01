@@ -60,9 +60,13 @@ def draw_gaussian(image, point, sigma):
     return image
 
 def transform(point, center, scale, resolution, invert=False):
-    _pt = torch.ones(3)
-    _pt[0] = point[0]
-    _pt[1] = point[1]
+    if len(point) == 2:
+        _pt = torch.ones(3)
+        _pt[0] = point[0]
+        _pt[1] = point[1]
+    else:
+        _pt = torch.ones(len(point), 3)
+        _pt[:,:2] = torch.from_numpy(point)
 
     h = 200.0 * scale
     t = torch.eye(3)
@@ -74,7 +78,10 @@ def transform(point, center, scale, resolution, invert=False):
     if invert:
         t = torch.inverse(t)
 
-    new_point = (torch.matmul(t, _pt))[0:2]
+    if len(point) == 2:
+        new_point = (torch.matmul(t, _pt))[0:2]
+    else:
+        new_point = (torch.matmul(_pt, t))[:,:2]
 
     return new_point.int()
 
@@ -488,15 +495,15 @@ def write2file(image, filename):
 
 def display_landmarks(fig, landmarks, gt_landmarks):
     if len(gt_landmarks):
-        fig.plot(gt_landmarks[0:17,0], gt_landmarks[0:17,1], marker='o',markersize=1,linestyle='-',color='b',lw=0.5)
-        fig.plot(gt_landmarks[17:22,0],gt_landmarks[17:22,1],marker='o',markersize=1,linestyle='-',color='b',lw=0.5)
-        fig.plot(gt_landmarks[22:27,0],gt_landmarks[22:27,1],marker='o',markersize=1,linestyle='-',color='b',lw=0.5)
-        fig.plot(gt_landmarks[27:31,0],gt_landmarks[27:31,1],marker='o',markersize=1,linestyle='-',color='b',lw=0.5)
-        fig.plot(gt_landmarks[31:36,0],gt_landmarks[31:36,1],marker='o',markersize=1,linestyle='-',color='b',lw=0.5)
-        fig.plot(gt_landmarks[36:42,0],gt_landmarks[36:42,1],marker='o',markersize=1,linestyle='-',color='b',lw=0.5)
-        fig.plot(gt_landmarks[42:48,0],gt_landmarks[42:48,1],marker='o',markersize=1,linestyle='-',color='b',lw=0.5)
-        fig.plot(gt_landmarks[48:60,0],gt_landmarks[48:60,1],marker='o',markersize=1,linestyle='-',color='b',lw=0.5)
-        fig.plot(gt_landmarks[60:68,0],gt_landmarks[60:68,1],marker='o',markersize=1,linestyle='-',color='b',lw=0.5)
+        fig.plot(gt_landmarks[0:17,0], gt_landmarks[0:17,1], marker='o',markersize=1,linestyle='-',color='b',lw=0.2)
+        fig.plot(gt_landmarks[17:22,0],gt_landmarks[17:22,1],marker='o',markersize=1,linestyle='-',color='b',lw=0.2)
+        fig.plot(gt_landmarks[22:27,0],gt_landmarks[22:27,1],marker='o',markersize=1,linestyle='-',color='b',lw=0.2)
+        fig.plot(gt_landmarks[27:31,0],gt_landmarks[27:31,1],marker='o',markersize=1,linestyle='-',color='b',lw=0.2)
+        fig.plot(gt_landmarks[31:36,0],gt_landmarks[31:36,1],marker='o',markersize=1,linestyle='-',color='b',lw=0.2)
+        fig.plot(gt_landmarks[36:42,0],gt_landmarks[36:42,1],marker='o',markersize=1,linestyle='-',color='b',lw=0.2)
+        fig.plot(gt_landmarks[42:48,0],gt_landmarks[42:48,1],marker='o',markersize=1,linestyle='-',color='b',lw=0.2)
+        fig.plot(gt_landmarks[48:60,0],gt_landmarks[48:60,1],marker='o',markersize=1,linestyle='-',color='b',lw=0.2)
+        fig.plot(gt_landmarks[60:68,0],gt_landmarks[60:68,1],marker='o',markersize=1,linestyle='-',color='b',lw=0.2)
     if len(landmarks):
         fig.plot(landmarks[0:17,0], landmarks[0:17,1], marker='o',markersize=2,linestyle='-',color='r',lw=1)
         fig.plot(landmarks[17:22,0],landmarks[17:22,1],marker='o',markersize=2,linestyle='-',color='r',lw=1)
@@ -514,9 +521,10 @@ def tic(timename):
 def toc(timename, fps=False):
     elapsed = time.time() - times[timename]
     if not fps:
-        print(timename, ": %.3f" % (elapsed))
+        print(timename, ": %.4f" % (elapsed))
     else:
-        print(timename, ": %.3f (fps: %.1f)" % (elapsed, 1/elapsed))
+        print(timename, ": %.4f (fps: %.1f)" % (elapsed, 1/elapsed))
+    return elapsed
 
 
 def plot_landmarks_on_image(calculated, expected, frame, num_landmarks=68):
@@ -524,16 +532,17 @@ def plot_landmarks_on_image(calculated, expected, frame, num_landmarks=68):
         expected_point_color = (0,0,255)
         calculated_point_color = (255,255,255)
         # for landmark in landmarks:
-        cv2.circle(frame, (int(expected[i][0]), int(expected[i][1])),
-                   1, expected_point_color, thickness=2)
         cv2.circle(frame, (int(calculated[i][0]), int(calculated[i][1])),
                    1, calculated_point_color, thickness=2)
-        cv2.line(frame,
-                 (int(expected[i][0]), int(expected[i][1])),
-                 (int(calculated[i][0]), int(calculated[i][1])),
-                 (255,255,255),
-                 thickness=1,
-                 lineType=1)
+        if len(expected):
+            cv2.circle(frame, (int(expected[i][0]), int(expected[i][1])),
+                       1, expected_point_color, thickness=2)
+            cv2.line(frame,
+                     (int(expected[i][0]), int(expected[i][1])),
+                     (int(calculated[i][0]), int(calculated[i][1])),
+                     (255,255,255),
+                     thickness=1,
+                     lineType=1)
 
 def show_landmarks(image, landmarks):
     """Show image with landmarks"""

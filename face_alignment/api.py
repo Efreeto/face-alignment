@@ -13,7 +13,7 @@ try:
 except BaseException:
     import urllib as request_file
 
-from .models import FAN, ResNetDepth, STN
+from .models import FAN, ResNetDepth, STN, STN_padded
 from .utils import *
 import matplotlib.pyplot as plt
 
@@ -151,7 +151,7 @@ class FaceAlignment:
                 self.depth_prediciton_net.cuda()
             self.depth_prediciton_net.eval()
 
-        self.face_normalization_net = STN()
+        self.face_normalization_net = STN_padded()
         if self.enable_cuda:
             self.face_normalization_net.cuda()
 
@@ -246,6 +246,7 @@ class FaceAlignment:
         frontal_images = []
         images_so_far = 0
         running_error = 0.0
+        running_time = 0
         for i, d in enumerate(detected_faces):
             if i > 1 and not all_faces:
                 break
@@ -260,7 +261,7 @@ class FaceAlignment:
             scale = (d.right() - d.left() + d.bottom() - d.top()) / 200.0
 
             if self.use_face_normalization or self.use_face_normalization_from_caffe:
-                inp = crop(image, center, scale, resolution=480.0)
+                inp = crop(image, center, scale, resolution=720.0)
             else:
                 inp = crop(image, center, scale)
                 front_img = inp
@@ -273,9 +274,10 @@ class FaceAlignment:
 
             if self.use_face_normalization:
                 tic("face_normalization")
-                inp, _, theta = self.face_normalization_net(inp)
-                toc("face_normalization")
-                print("Theta: ", theta)
+                inp, theta = self.face_normalization_net(inp)
+                stn_elapsed = toc("face_normalization")
+                running_time += stn_elapsed
+                # print("Theta: ", theta)
                 front_img = inp.data.cpu().numpy()
                 front_img = front_img[-1].transpose(1, 2, 0)
             elif self.use_face_normalization_from_caffe:
@@ -343,9 +345,10 @@ class FaceAlignment:
             frontal_images.append(front_img)
 
         avg_error = running_error / images_so_far
-        print("MSE: {:.4f}".format(avg_error))
+        avg_time = running_time / images_so_far
+        # print("MSE: {:.4f}".format(avg_error))
         # toc("total", fps=True)
-        return landmarks, gt_landmarks, proposal_images, frontal_images, avg_error
+        return landmarks, gt_landmarks, proposal_images, frontal_images, avg_error, avg_time
 
     def process_folder(self, path, type, all_faces=False):
         types = ('*.jpg', '*.png')
@@ -355,14 +358,18 @@ class FaceAlignment:
 
         predictions = []
         running_error = 0.0
+        running_time = 0
         for image_name in images_list:
             predictions.append(
                 [image_name, self.get_landmarks(image_name, type, all_faces)])
 
         for preds in predictions:
             running_error += preds[1][4]
+            running_time += preds[1][5]
         avg_error = running_error / len(predictions)
+        avg_time = running_time / len(predictions)
         print("Average MSE: {:.4f}".format(avg_error))
+        print("Average Time (STN): {:.4f}".format(avg_time))
         return predictions
 
     def train_STN(self, path, type, save_state_file):
@@ -370,10 +377,10 @@ class FaceAlignment:
         use_manual_rotation = True
         use_FAN_update = False
         loss_image = False
-        loss_manual_theta = True
+        loss_manual_theta = True    # use_manual_rotation must be True
+        loss_manual_landmarks = False    # use_manual_rotation must be True
         loss_hm = False
         loss_hm_landmarks = False    # Take heatmap outputs as Variable and use gradients on them
-        loss_manual_landmarks = False
 
         display_mode = True
 
@@ -381,14 +388,14 @@ class FaceAlignment:
         if use_manual_rotation:
             data_transforms.append(RandomRotation(40, 5))
         data_transforms.extend((
-            LandmarkCrop(480),
+            LandmarkCrop(720),
             ToTensor()
         ))
 
         image_datasets = {x: FaceLandmarksDataset(path, type,
                                                   transforms=transforms.Compose(data_transforms))
                           for x in ['train', 'val']}
-        dataloaders = {x: DataLoader(image_datasets[x], batch_size=16, shuffle=True, num_workers=8)
+        dataloaders = {x: DataLoader(image_datasets[x], batch_size=20, shuffle=True, num_workers=10)
                        for x in ['train', 'val']}
         dataset_sizes = {x: len(image_datasets[x]) for x in ['train', 'val']}
 
@@ -404,8 +411,7 @@ class FaceAlignment:
             # Freeze FAN
             for param in self.face_alignment_net.parameters():
                 param.requires_grad = False
-            # optimizer = optim.RMSprop(self.face_normalization_net.parameters(), lr=0.00025, weight_decay=0.9)
-            optimizer = optim.Adam(self.face_normalization_net.parameters(), lr=0.001, weight_decay=0.4)
+            optimizer = optim.Adam(self.face_normalization_net.parameters(), lr=0.001, weight_decay=0.4)    # loss_manual_theta
             # optimizer = optim.SGD(self.face_normalization_net.parameters(), lr=0.000001, momentum=0.9, weight_decay=0.4)
             # optimizer = optim.SGD(self.face_normalization_net.parameters(), lr=0.01, momentum=0.9)
             # optimizer = optim.RMSprop(self.face_normalization_net.parameters(), lr=0.00025, eps=1.e-8)
@@ -415,7 +421,7 @@ class FaceAlignment:
         scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=100, verbose=True)
         # scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=3, gamma=0.1)
 
-        num_epochs = 15
+        num_epochs = 20
 
         ##########
         since = time.time()
@@ -442,6 +448,7 @@ class FaceAlignment:
                     # get the inputs
                     input, landmarks = data['image'], data['landmarks']
                     if use_manual_rotation:
+                        batch_size_half = data['theta'].shape[0]
                         input, landmarks = torch.cat((input, data['image_rot'])), torch.cat((landmarks, data['landmarks_rot']))
                     if self.enable_cuda:
                         input, landmarks = input.cuda(), landmarks.cuda()
@@ -451,7 +458,7 @@ class FaceAlignment:
                     optimizer.zero_grad()
 
                     # forward
-                    frontal_img, _, theta = self.face_normalization_net(input)
+                    frontal_img, theta = self.face_normalization_net(input)
 
                     if loss_image:
                         input_org_Var = Variable(torch.from_numpy(input_org.transpose((2, 0, 1))).float().cuda(), requires_grad=False)
@@ -507,27 +514,8 @@ class FaceAlignment:
                         landmarks_disp = pts_img.numpy()
                         gt_landmarks_disp = landmarks.numpy()
 
-                    if loss_manual_landmarks:
-                        landmarks_rot_Var = Variable(landmarks_rot - origin_rot, requires_grad=False)
-                        landmarks_rot_Var = torch.matmul(landmarks_rot_Var, theta[0])[:,:2]
-                        landmarks_rot_Var = landmarks_rot_Var + Variable(origin_org, requires_grad=False)
-
-                        loss = criterion(landmarks_rot_Var, landmarks)
-
-                        if j == 2:
-                            landmarks_disp = landmarks_rot_Var.data.cpu().numpy()
-                            gt_landmarks_disp = landmarks.data.cpu().numpy()
-
-                            # this is correct. Just another way to get gt_landmark_disp
-                            # gt_landmarks_disp = landmarks_rot - origin_rot
-                            # gt_landmarks_disp = torch.matmul(gt_landmarks_disp, manual_theta.data)[:,:2]
-                            # gt_landmarks_disp = gt_landmarks_disp + origin_org
-                            # gt_landmarks_disp = gt_landmarks_disp.cpu().numpy()
-
-                            display_landmarks(image, landmarks_disp, gt_landmarks_disp, "Results")
-
                     if loss_manual_theta:
-                        manual_theta = torch.FloatTensor(utils.transformation_matrix(0)).repeat(data['theta'].shape[0],1,1)
+                        manual_theta = torch.FloatTensor(utils.transformation_matrix(0)).expand(batch_size_half,-1,-1)
                         manual_theta = torch.cat((manual_theta, data['theta']))
                         if self.enable_cuda:
                             manual_theta = manual_theta.cuda()
@@ -535,60 +523,142 @@ class FaceAlignment:
                         w_theta = 100.0
                         loss = criterion(theta*w_theta, manual_theta*w_theta)
 
-                    if display_mode and phase == 'train' and j == 10:
+                    if loss_manual_landmarks:
+                        cropped_landmarks = landmarks.clone()
+                        minx = cropped_landmarks[:,:,0].min(1)[0]
+                        miny = cropped_landmarks[:,:,1].min(1)[0]
+                        cropped_landmarks[:,:,0] -= minx.unsqueeze(1).expand(-1,cropped_landmarks.shape[1])
+                        cropped_landmarks[:,:,1] -= miny.unsqueeze(1).expand(-1,cropped_landmarks.shape[1])
+
+                        k = 0
+                        cropped_landmarks[:,:,k] = 480. - cropped_landmarks[:,:,k]
+
+                        # batch_size = batch_size_half*2
+                        # theta_inv = Variable(torch.eye(3).repeat(batch_size,1,1))
+                        # if self.enable_cuda:
+                        #     theta_inv = theta_inv.cuda()
+                        # theta_inv[:,:2] = theta
+                        # for l in range(batch_size):
+                        #     theta_inv[l] = theta_inv[l]
+                        # theta_inv = theta_inv[:,:2]
+
+                        manual_landmarks = cropped_landmarks.transpose(1,2)
+                        rotated_landmarks_ones = Variable(torch.ones(landmarks.shape[0], 1, landmarks.shape[1]), requires_grad=False)
+                        if self.enable_cuda:
+                            rotated_landmarks_ones = rotated_landmarks_ones.cuda()
+                        manual_landmarks = torch.cat((manual_landmarks, rotated_landmarks_ones), dim=1)
+                        manual_landmarks = torch.bmm(theta, manual_landmarks).transpose(1,2)
+
+                        # manual_landmarks = cropped_landmarks.clone()
+                        # manual_landmarks = torch.bmm(manual_landmarks, theta_inv)[:,:,:2]
+
+                        manual_landmarks[:,:,k] = 480. - manual_landmarks[:,:,k]
+                        cropped_landmarks[:,:,k] = 480. - cropped_landmarks[:,:,k]
+
+                        cropped_landmarks[batch_size_half:] = cropped_landmarks[:batch_size_half]    # Make normal landmarks targets for both normal and rotated landmarks
+                        loss = criterion(manual_landmarks, cropped_landmarks)
+
+                        # if j == 2:
+                        #     landmarks_disp = landmarks_rot_Var.data.cpu().numpy()
+                        #     gt_landmarks_disp = landmarks.data.cpu().numpy()
+                        #
+                        #     # this is correct. Just another way to get gt_landmark_disp
+                        #     # gt_landmarks_disp = landmarks_rot - origin_rot
+                        #     # gt_landmarks_disp = torch.matmul(gt_landmarks_disp, manual_theta.data)[:,:2]
+                        #     # gt_landmarks_disp = gt_landmarks_disp + origin_org
+                        #     # gt_landmarks_disp = gt_landmarks_disp.cpu().numpy()
+                        #
+                        #     display_landmarks(image, landmarks_disp, gt_landmarks_disp, "Results")
+
+                    if display_mode and phase == 'train' and j in [0]:    # phase can be anything, j can be any number
                         def TensorToImg(tensor):
                             return tensor.cpu().numpy().transpose(1, 2, 0)
-                        image = io.imread(data['filename'][0])
-                        input_org = TensorToImg(data['image'][0])
-                        input_rot = TensorToImg(input[0].data)
-                        output_img = TensorToImg(frontal_img[0].data)
+
+                        idx = 0    # idx can be any number
+                        image = io.imread(data['filename'][idx])
+                        image = color.grey2rgb(image)   # For some gray scale images
+                        input_org = TensorToImg(input[idx].data)
+                        output_org = TensorToImg(frontal_img[idx].data)
+                        theta_text_org = theta[idx].data
+                        landmarks_image = landmarks[idx].data.cpu().numpy()
+                        bbox = utils.bounding_box(landmarks_image)
+                        center, scale = utils.center_scale_from_bbox(bbox)
 
                         fig = plt.figure(figsize=(9, 6), tight_layout=True)
-                        ax = fig.add_subplot(1, 4, 1)
+                        ax = fig.add_subplot(1, 3, 1)
                         ax.axis('off')
                         ax.imshow(image)
-                        ax = fig.add_subplot(2, 4, 2)
+                        utils.display_landmarks(ax, [], landmarks_image)
+
+                        if loss_manual_landmarks:
+                            cropped_landmarks_display = cropped_landmarks[idx].data.cpu().numpy()
+                            cropped_landmarks_display = utils.transform(cropped_landmarks_display, center, scale, output_org.shape[0]).numpy()
+                            cropped_landmarks_display = cropped_landmarks_display + (output_org.shape[1]/4*(200/190), output_org.shape[0]/4*(200/190))
+                            manual_landmarks_display = manual_landmarks[idx].data.cpu().numpy()
+                            manual_landmarks_display1 = utils.transform(manual_landmarks_display, center, scale, input_org.shape[0]).numpy()
+                            manual_landmarks_display1 = manual_landmarks_display1 + (input_org.shape[1]/4*(200/190), input_org.shape[0]/4*(200/190))
+                            manual_landmarks_display2 = utils.transform(manual_landmarks_display, center, scale, output_org.shape[0]).numpy()
+                            manual_landmarks_display2 = manual_landmarks_display2 + (output_org.shape[1]/4*(200/190), output_org.shape[0]/4*(200/190))
+                        else:
+                            cropped_landmarks_display = []
+                            manual_landmarks_display1 = []
+                            manual_landmarks_display2 = []
+
+                        ax = fig.add_subplot(2, 3, 2)
                         ax.axis('off')
                         ax.imshow(input_org)
-                        if use_manual_rotation:
-                            ax = fig.add_subplot(2, 4, 3)
-                            ax.axis('off')
-                            manual_theta_text = manual_theta[0].data
-                            ax.title.set_text("{:.3f} {:.3f} {:.1f}\n{:.3f} {:.3f} {:.1f}".format(manual_theta_text[0,0], manual_theta_text[0,1], manual_theta_text[0,2],
-                                                                                                  manual_theta_text[1,0], manual_theta_text[1,1], manual_theta_text[1,2]))
-                            ax.imshow(input_rot)
-                        ax = fig.add_subplot(2, 4, 4)
-                        ax.axis('off')
-                        theta_text = theta[0].data
-                        ax.title.set_text(
-                            "{:.3f} {:.3f} {:.1f}\n{:.3f} {:.3f} {:.1f}".format(theta_text[0, 0], theta_text[0, 1], theta_text[0, 2],
-                                                                                theta_text[1, 0], theta_text[1, 1], theta_text[1, 2]))
-                        ax.imshow(output_img)
+                        landmarks_org = landmarks_image - (bbox[0], bbox[1])
+                        landmarks_org = utils.transform(landmarks_org, center, scale, input_org.shape[0]).numpy()
+                        landmarks_org = landmarks_org + (input_org.shape[1]/4*(200/190), input_org.shape[0]/4*(200/190))
+                        utils.display_landmarks(ax, manual_landmarks_display1, landmarks_org)
+                        ax.title.set_text("1 0 0\n0 1 0")
 
-                        idx_rot = int(data['theta'].shape[0])
+                        ax = fig.add_subplot(2, 3, 3)
+                        ax.axis('off')
+                        ax.imshow(output_org)
+                        utils.display_landmarks(ax, manual_landmarks_display2, cropped_landmarks_display)
+                        ax.title.set_text("{:.3f} {:.3f} {:.1f}\n{:.3f} {:.3f} {:.1f}".format(theta_text_org[0, 0], theta_text_org[0, 1], theta_text_org[0, 2],
+                                                                                              theta_text_org[1, 0], theta_text_org[1, 1], theta_text_org[1, 2]))
+
+                        if not use_manual_rotation:
+                            continue
+
+                        idx_rot = idx + int(batch_size_half)
                         input_rot = TensorToImg(input[idx_rot].data)
-                        output_img = TensorToImg(frontal_img[idx_rot].data)
+                        output_rot = TensorToImg(frontal_img[idx_rot].data)
+                        manual_theta_text = data['theta'][idx]
+                        theta_text_rot = theta[idx_rot].data
+                        landmarks_rot = landmarks[idx_rot].data.cpu().numpy()
+                        bbox = utils.bounding_box(landmarks_rot)
+                        center, scale = utils.center_scale_from_bbox(bbox)
 
-                        if use_manual_rotation:
-                            ax = fig.add_subplot(2, 4, 7)
-                            ax.axis('off')
-                            manual_theta_text = manual_theta[idx_rot].data
-                            ax.title.set_text("{:.3f} {:.3f} {:.1f}\n{:.3f} {:.3f} {:.1f}".format(manual_theta_text[0, 0],
-                                                                                                  manual_theta_text[0, 1],
-                                                                                                  manual_theta_text[0, 2],
-                                                                                                  manual_theta_text[1, 0],
-                                                                                                  manual_theta_text[1, 1],
-                                                                                                  manual_theta_text[1, 2]))
-                            ax.imshow(input_rot)
-                        ax = fig.add_subplot(2, 4, 8)
+                        if loss_manual_landmarks:
+                            cropped_landmarks_display = cropped_landmarks[idx_rot].data.cpu().numpy()
+                            cropped_landmarks_display = utils.transform(cropped_landmarks_display, center, scale, output_rot.shape[0]).numpy()
+                            cropped_landmarks_display = cropped_landmarks_display + (output_rot.shape[1]/4*(200/190), output_rot.shape[0]/4*(200/190))
+                            manual_landmarks_display = manual_landmarks[idx_rot].data.cpu().numpy()
+                            manual_landmarks_display1 = utils.transform(manual_landmarks_display, center, scale, input_rot.shape[0]).numpy()
+                            manual_landmarks_display1 = manual_landmarks_display1 + (input_rot.shape[1]/4*(200/190), input_rot.shape[0]/4*(200/190))
+                            manual_landmarks_display2 = utils.transform(manual_landmarks_display, center, scale, output_rot.shape[0]).numpy()
+                            manual_landmarks_display2 = manual_landmarks_display2 + (output_rot.shape[1]/4*(200/190), output_rot.shape[0]/4*(200/190))
+
+                        ax = fig.add_subplot(2, 3, 5)
                         ax.axis('off')
-                        theta_text = theta[idx_rot].data
-                        ax.title.set_text(
-                            "{:.3f} {:.3f} {:.1f}\n{:.3f} {:.3f} {:.1f}".format(theta_text[0, 0], theta_text[0, 1],
-                                                                                theta_text[0, 2],
-                                                                                theta_text[1, 0], theta_text[1, 1],
-                                                                                theta_text[1, 2]))
-                        ax.imshow(output_img)
+                        ax.imshow(input_rot)
+                        landmarks_rot = landmarks_rot - (bbox[0], bbox[1])
+                        landmarks_rot = utils.transform(landmarks_rot, center, scale, input_rot.shape[0]).numpy()
+                        landmarks_rot = landmarks_rot + (input_rot.shape[1]/4*(200/190), input_rot.shape[0]/4*(200/190))
+                        utils.display_landmarks(ax, manual_landmarks_display1, landmarks_rot)
+                        ax.title.set_text("{:.3f} {:.3f} {:.1f}\n{:.3f} {:.3f} {:.1f}".format(manual_theta_text[0,0], manual_theta_text[0,1], manual_theta_text[0,2],
+                                                                                              manual_theta_text[1,0], manual_theta_text[1,1], manual_theta_text[1,2]))
+
+                        ax = fig.add_subplot(2, 3, 6)
+                        ax.axis('off')
+                        ax.imshow(output_rot)
+                        utils.display_landmarks(ax, manual_landmarks_display2, cropped_landmarks_display)
+                        ax.title.set_text("{:.3f} {:.3f} {:.1f}\n{:.3f} {:.3f} {:.1f}".format(theta_text_rot[0, 0], theta_text_rot[0, 1], theta_text_rot[0, 2],
+                                                                                              theta_text_rot[1, 0], theta_text_rot[1, 1], theta_text_rot[1, 2]))
+
                         plt.show(block=False)
 
                     # backward + optimize only if in training phase

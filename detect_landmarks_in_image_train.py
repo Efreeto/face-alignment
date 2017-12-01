@@ -214,13 +214,14 @@ def train_model(model,
                     #     pts, pts_img = utils.get_preds_fromhm(outputs[-1].cpu().data, center, scale)
                     #     loss = utils.landmark_diff(landmarks.cpu().numpy(), pts_img[0].numpy())
 
-                    if display_mode and phase == 'trainset' and j in [2, 3]:
+                    if display_mode and phase == 'trainset' and j in [1, 2, 3]:
                         import matplotlib.pyplot as plt
                         def TensorToImg(tensor):
                             return tensor.cpu().numpy().transpose(1, 2, 0)
 
                         idx = 2
                         image = io.imread(data['filename'][idx])
+                        image = color.grey2rgb(image)   # For some gray scale images
                         input_org = TensorToImg(data['image'][idx])
                         input_rot = TensorToImg(out_frontal_img[idx].data)
                         landmarks = data['landmarks'][idx].cpu().numpy()
@@ -234,17 +235,24 @@ def train_model(model,
                         preds, preds_orig = utils.get_preds_fromhm(out_heatmaps[-1][idx].cpu().data.unsqueeze(0), center, scale)
                         preds_image = preds_orig[0].numpy()
                         utils.display_landmarks(ax, preds_image, landmarks)
+                        # image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+                        # utils.plot_landmarks_on_image(preds_image, landmarks, image, model.num_landmarks)
+                        # cv2.imwrite("{}/{}_{}.png".format(results_dir, phase, j), image)
+
                         ax = fig.add_subplot(2, 3, 2)
                         ax.axis('off')
                         ax.imshow(input_org)
-                        preds_org = preds[0].numpy() * 8.0
+                        preds_org = preds[0].numpy() * 8.0 / (200. / 190.)
                         utils.display_landmarks(ax, preds_org, [])
+                        # input_org = cv2.cvtColor(input_org, cv2.COLOR_RGB2BGR)
+                        # utils.plot_landmarks_on_image(preds_org, [], input_org, model.num_landmarks)
+                        # cv2.imwrite("{}/{}_{}_org.png".format(results_dir, phase, j), input_org*255.)
+
                         ax = fig.add_subplot(2, 3, 3)
                         ax.axis('off')
                         ax.imshow(input_rot)
-                        preds, preds_orig = utils.get_preds_fromhm(out_hm_rot[-1][idx].cpu().data.unsqueeze(0), center, scale)
-                        preds_rot = preds[0].numpy() * 4.0
-                        utils.display_landmarks(ax, preds_rot, [])
+                        # input_rot = cv2.cvtColor(input_rot, cv2.COLOR_RGB2BGR)
+                        # cv2.imwrite("{}/{}_{}_rot.png".format(results_dir, phase, j), input_rot*255.)
 
                         if use_manual_rotation:
                             idx_rot = idx + int(data['theta'].shape[0])
@@ -300,9 +308,6 @@ def train_model(model,
     print('Training complete in {:.0f}m {:.0f}s'.format(
         time_elapsed // 60, time_elapsed % 60))
     print('Best val Loss: {:.4f}'.format(best_loss))
-
-    if display_mode:
-        plt.show(block=True)
 
     # load best model weights
     model.load_state_dict(best_model_wts)
@@ -469,7 +474,7 @@ def main():
             criterion = criterion.cuda()
 
         model_ft = train_model(model_ft, criterion, optimizer_ft, dataloaders, interval_scheduler,
-                            num_epochs=args.epochs, results_dir=args.log_dir, resume=args.resume, log_progress=args.log_progress)
+                            num_epochs=args.epochs, resume=args.resume, log_progress=args.log_progress)
 
         if args.evaluate_on_finish:
             model_ft.load_state_dict(torch.load(os.path.join(args.log_dir, 'checkpoint.pth.tar'))['state_dict'])

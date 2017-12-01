@@ -276,15 +276,17 @@ class STN(nn.Module):
         self.net1_fc5_1 = nn.Linear(80*3*3, 512)
         self.net1_drop6 = nn.Dropout2d(0.2)
         self.net1_68point = nn.Linear(512, 136)
-        self.loc_reg_ = nn.Linear(136, 4)   # in_features: 136
+        self.loc_reg_ = nn.Linear(136, 6)
+        # self.loc_reg_ = nn.Linear(136, 4)
 
-        self.base_theta = Variable(torch.eye(2,2)).unsqueeze(0)
-        self.base_transl = Variable(torch.zeros(2,1)).unsqueeze(0)
+        self.base_theta = Variable(torch.eye(2, 3), requires_grad=False).unsqueeze(0)
+        # self.base_theta = Variable(torch.eye(2,2)).unsqueeze(0)
+        # self.base_transl = Variable(torch.zeros(2,1)).unsqueeze(0)
 
     def forward(self, inp):
         batch_size = inp.size(0)
 
-        x = self.downsample(inp)
+        x = self.downsample(inp)    # inp: 480x480
         x = self.net1_conv1(x)
         x = self.net1_PReLU(x)
         x = self.net1_pool(x)
@@ -296,22 +298,118 @@ class STN(nn.Module):
         x = self.net1_pool(x)
         x = self.net1_conv4(x)
         x = self.net1_PReLU(x)
-        x = x.view(x.size(0), -1)
+        x = x.view(batch_size, -1)
         x = self.net1_fc5_1(x)
         x = self.net1_PReLU(x)
         x = self.net1_drop6(x)
         x = self.net1_68point(x)
-        landmarks = self.net1_PReLU(x)
+        landmarks = self.net1_PReLU(x)    # landmarks: 136 (68x2 very inaccurate landmarks)
         theta = self.loc_reg_(landmarks)
-        theta = theta.view(batch_size,2,2)
-        # theta = Variable(torch.Tensor([[1, 0, 0],[0, 1, 0]]).cuda().view(1, 2, 3).repeat(inp.size(0), 1, 1), requires_grad=True) # identity transform matrix
+        theta = theta.view(batch_size, 2, 3)
+        # theta = theta.view(batch_size, 2, 2)
 
         if theta.is_cuda:
             self.base_theta = self.base_theta.cuda()
-            self.base_transl = self.base_transl.cuda()
-        base_transl = self.base_transl.repeat(batch_size,1,1)
+            # self.base_transl = self.base_transl.cuda()
+        # base_transl = self.base_transl.repeat(batch_size,1,1)
         theta += self.base_theta
-        theta = torch.cat((theta, base_transl), dim=2)
+        # theta = torch.cat((theta, base_transl), dim=2)
+
+        # For testing
+        # theta = Variable(torch.Tensor([[1, 0, 0],[0, 1, 0]]).cuda().view(1, 2, 3).repeat(batch_size, 1, 1), requires_grad=True)    # identity transform matrix
+        # theta = Variable(torch.Tensor([[0.8, 0.57, 0], [0, 0.8, 0]]).cuda().view(1, 2, 3).repeat(batch_size, 1, 1), requires_grad=True)  # stretching transform matrix
+
+        grid = F.affine_grid(theta, torch.Size([batch_size, 3, 256, 256]))   # Prepare the transfomer grid with (256, 256) size that FAN expects, w.r.t theta
+        outp = F.grid_sample(inp, grid)                             # "Rotate" the image by applying the grid
+        return outp, theta    # outp: 256x256, theta: 2x3
+
+
+class STN_padded(nn.Module):
+
+    def __init__(self):
+        super(STN_padded, self).__init__()
+        self.downsample = nn.AvgPool2d(8) # or stride=448/60
+        self.net1_conv1 = nn.Conv2d(3,20,5)
+        self.net1_conv2 = nn.Conv2d(20,48,5)
+        self.net1_conv3 = nn.Conv2d(48,64,3)
+        self.net1_conv4 = nn.Conv2d(64,80,3)
+        self.net1_PReLU = nn.PReLU()
+        self.net1_pool = nn.MaxPool2d(2)
+        self.net1_fc5_1 = nn.Linear(80*3*3, 512)
+        self.net1_drop6 = nn.Dropout2d(0.2)
+        self.net1_68point = nn.Linear(512, 136)
+        self.loc_reg_ = nn.Linear(136, 6)
+
+        self.base_theta = Variable(torch.eye(2, 3)).unsqueeze(0)
+
+        self.pad = 120
+
+    def forward(self, inp):
+        batch_size = inp.size(0)
+
+        x = inp[:, :, self.pad:-self.pad, self.pad:-self.pad]    # inp: 720x720, x: 480x480. Only use the center portion for training (not the black triangles)
+        x = self.downsample(x) #3x60x60
+        x = self.net1_conv1(x) # 20x56x56
+        x = self.net1_PReLU(x) # 20x56x56
+        x = self.net1_pool(x) # 20x28x28
+        x = self.net1_conv2(x) # 48x24x24
+        x = self.net1_PReLU(x) # 48x24x24
+        x = self.net1_pool(x) # 48x12x12
+        x = self.net1_conv3(x) # 64x10x10
+        x = self.net1_PReLU(x)# 64x10x10
+        x = self.net1_pool(x)# 64x5x5
+        x = self.net1_conv4(x) # 80x3x3
+        x = self.net1_PReLU(x) # 80x3x3
+        x = x.view(x.size(0), -1) # 720
+        x = self.net1_fc5_1(x) # 512
+        x = self.net1_PReLU(x) # 512
+        x = self.net1_drop6(x) # 512
+        x = self.net1_68point(x) # 136
+        landmarks = self.net1_PReLU(x)    # landmarks: 136 (68x2 very inaccurate landmarks)
+        theta = self.loc_reg_(landmarks) # 6
+        theta = theta.view(batch_size, 2, 3)
+
+        if theta.is_cuda:
+            self.base_theta = self.base_theta.cuda()
+        theta += self.base_theta
+
+        # For testing
+        # theta = Variable(torch.Tensor([[1, 0, 0],[0, 1, 0]]).cuda().view(1, 2, 3).repeat(batch_size, 1, 1), requires_grad=True)    # identity transform matrix
+        # theta = Variable(torch.Tensor([[0.8, 0.57, 0], [0, 0.8, 0]]).cuda().view(1, 2, 3).repeat(batch_size, 1, 1), requires_grad=True)    # stretching transform matrix
+
+        grid = F.affine_grid(theta, torch.Size([batch_size, 3, 256, 256]))   # Prepare the transfomer grid with (256, 256) size that FAN expects, w.r.t theta
+        outp = F.grid_sample(inp, grid)    # "Rotate" the image by applying the grid
+        return outp, theta    # outp: 256x256, theta: 2x3
+
+
+
+class STN_HG(nn.Module):
+
+    def __init__(self):
+        super(STN_HG, self).__init__()
+        self.base_theta = Variable(torch.eye(2, 3)).unsqueeze(0)
+
+        hg_module = 1
+        self.add_module('m' + str(hg_module), HourGlass(1, 4, 256))
+        self.add_module('top_m_' + str(hg_module), ConvBlock(256, 256))
+        self.add_module('conv_last' + str(hg_module),
+                        nn.Conv2d(256, 256, kernel_size=1, stride=1, padding=0))
+        self.add_module('l' + str(hg_module), nn.Conv2d(256, 68, kernel_size=1, stride=1, padding=0))
+        self.add_module('bn_end' + str(hg_module), nn.BatchNorm2d(256))
+
+        self.loc_reg_ = nn.Linear(136, 6)
+
+    def forward(self, inp):
+        batch_size = inp.size(0)
+
+        i = 1
+        hg = self._modules['m' + str(i)](inp)
+        ll = hg
+        ll = self._modules['top_m_' + str(i)](ll)
+        ll = F.relu(self._modules['bn_end' + str(i)]
+                    (self._modules['conv_last' + str(i)](ll)), True)
+        landmarks = ll
+        theta = self.loc_reg_(ll)
 
         grid = F.affine_grid(theta, torch.Size([batch_size, 3, 256, 256]))   # Prepare the transfomer grid with (256, 256) size that FAN expects, w.r.t theta
         outp = F.grid_sample(inp, grid)                             # "Rotate" the image by applying the grid
@@ -328,7 +426,7 @@ class STEFAN(nn.Module):
         self.stn = STN()
 
     def forward(self, inp):
-        frontal_img, landmarks, theta = self.stn(inp)
+        frontal_img, theta = self.stn(inp)
         hm_rot = self.fan(frontal_img)
 
         theta_inv = Variable(torch.eye(3))

@@ -15,15 +15,16 @@ fa = face_alignment.FaceAlignment(face_alignment.LandmarksType._2D,
 # fa.make_rct_files("Databases/FEI")
 # result_list = []
 
-# fa.train_STN("Databases/lfpw/trainset", 1, "Models/11-17_lfpw.pth")
-fa.use_STN("Models/11-17_lfpw.pth")
+fa.train_STN("Databases/lfpw/trainset", 1, "Models/12-01_padded.pth")
+# fa.train_STN("Databases/10W", 4, "Models/test.pth")
+fa.use_STN("Models/12-01_padded.pth")
 # fa.use_STN_from_caffe()
 
-# result_list = fa.process_folder("Databases/lfpw/testset", 1)
-result_list = fa.process_folder("Databases/10W", 4)
+result_list = fa.process_folder("Databases/lfpw/testset", 1)
+# result_list = fa.process_folder("Databases/10W", 4)
 
 for [image_name, preds_all] in result_list:
-    landmarks, gt_landmarks, proposal_img, frontal_img, errors = preds_all
+    landmarks, gt_landmarks, proposal_img, frontal_img, _, _ = preds_all
     preds = landmarks[-1]          # [-1]: Use only the last face detected when there are multiple faces in one picture (all_faces=True)
     gts = gt_landmarks[-1]
     input = io.imread(image_name)
