@@ -168,6 +168,7 @@ class RandomRotation(object):
         sample['image_rot'] = image_rot
         sample['landmarks_rot'] = landmarks_rot
         sample['theta'] = manual_theta
+        sample['angle'] = rotation_angle
 
         return sample
 
@@ -210,6 +211,15 @@ class CreateHeatmaps(object):
             new_pts = utils.transform(landmarks[i], center, scale, self.output_size)
             heatmap[i] = utils.draw_gaussian(heatmap[i], new_pts, 1)
         sample['heatmaps'] = torch.from_numpy(heatmap).view(self.n_features, self.output_size, self.output_size).float()
+
+        if 'image_rot' in sample:    # if RandomRotation, crop around the rotated image
+            landmarks = sample['landmarks_rot']
+            center, scale = utils.center_scale_from_bbox(utils.bounding_box(landmarks))
+            heatmap = np.zeros((self.n_features, self.output_size, self.output_size))
+            for i in range(self.n_features):
+                new_pts = utils.transform(landmarks[i], center, scale, self.output_size)
+                heatmap[i] = utils.draw_gaussian(heatmap[i], new_pts, 1)
+            sample['heatmaps_rot'] = torch.from_numpy(heatmap).view(self.n_features, self.output_size, self.output_size).float()
 
         return sample
 
@@ -320,7 +330,7 @@ class ToTensor(object):
         for key in sample:
             if key in ['image', 'image_rot']:
                 sample[key] = torchvision.transforms.ToTensor()(sample[key])
-            elif key in  ['filename', 'heatmaps']:
+            elif key in  ['filename', 'angle', 'heatmaps', 'heatmaps_rot']:
                 continue
             else:
                 sample[key] = torch.from_numpy(sample[key]).float()

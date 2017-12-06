@@ -15,9 +15,9 @@ fa = face_alignment.FaceAlignment(face_alignment.LandmarksType._2D,
 # fa.make_rct_files("Databases/FEI")
 # result_list = []
 
-fa.train_STN("Databases/lfpw/trainset", 1, "Models/12-01_padded.pth")
+fa.train_STN("Databases/lfpw/trainset", 1, "Models/12-05_FrozenFANwithTheta.pth")
 # fa.train_STN("Databases/10W", 4, "Models/test.pth")
-fa.use_STN("Models/12-01_padded.pth")
+fa.use_STN("Models/12-05_FrozenFANwithTheta.pth")
 # fa.use_STN_from_caffe()
 
 result_list = fa.process_folder("Databases/lfpw/testset", 1)

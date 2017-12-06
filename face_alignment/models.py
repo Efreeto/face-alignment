@@ -375,7 +375,7 @@ class STN_padded(nn.Module):
 
         # For testing
         # theta = Variable(torch.Tensor([[1, 0, 0],[0, 1, 0]]).cuda().view(1, 2, 3).repeat(batch_size, 1, 1), requires_grad=True)    # identity transform matrix
-        # theta = Variable(torch.Tensor([[0.8, 0.57, 0], [0, 0.8, 0]]).cuda().view(1, 2, 3).repeat(batch_size, 1, 1), requires_grad=True)    # stretching transform matrix
+        # theta = Variable(torch.Tensor([[1.1, 0.5, 0.3], [0, 0.8, -0.1]]).cuda().view(1, 2, 3).repeat(batch_size, 1, 1), requires_grad=True)    # stretching transform matrix
 
         grid = F.affine_grid(theta, torch.Size([batch_size, 3, 256, 256]))   # Prepare the transfomer grid with (256, 256) size that FAN expects, w.r.t theta
         outp = F.grid_sample(inp, grid)    # "Rotate" the image by applying the grid

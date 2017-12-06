@@ -117,7 +117,9 @@ def center_scale_from_bbox(bbox):
     maxx = bbox[2]
     maxy = bbox[3]
     center = torch.FloatTensor([maxx - (maxx - minx) / 2.0, maxy - (maxy - miny) / 2.0])
-    scale = (maxx - minx + maxy - miny) / 190.0
+    # center[1] = center[1] - (maxy - miny) * 0.1
+    scale = (maxx - minx + maxy - miny) / 200.0
+    # scale = (maxx - minx + maxy - miny) / 190.0
     return center, scale
 
 
