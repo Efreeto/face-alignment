@@ -348,7 +348,7 @@ class STN_padded(nn.Module):
         batch_size = inp.size(0)
 
         x = inp[:, :, self.pad:-self.pad, self.pad:-self.pad]    # inp: 720x720, x: 480x480. Only use the center portion for training (not the black triangles)
-        x = self.downsample(x) #3x60x60
+        x = self.downsample(x) # 3x60x60
         x = self.net1_conv1(x) # 20x56x56
         x = self.net1_PReLU(x) # 20x56x56
         x = self.net1_pool(x) # 20x28x28

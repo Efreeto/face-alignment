@@ -363,11 +363,13 @@ class FaceAlignment:
             predictions.append(
                 [image_name, self.get_landmarks(image_name, type, all_faces)])
 
-        for preds in predictions:
+        for i, preds in enumerate(predictions):
             running_error += preds[1][4]
+            if i==0:
+                continue
             running_time += preds[1][5]
         avg_error = running_error / len(predictions)
-        avg_time = running_time / len(predictions)
+        avg_time = running_time / (len(predictions)-1)
         print("Average MSE: {:.4f}".format(avg_error))
         print("Average Time (STN): {:.4f}".format(avg_time))
         return predictions
@@ -377,7 +379,7 @@ class FaceAlignment:
         use_manual_rotation = True
         use_FAN_update = False
         loss_image = False
-        loss_manual_theta = True    # use_manual_rotation must be True
+        loss_manual_theta = False    # use_manual_rotation must be True
         loss_manual_landmarks = False    # use_manual_rotation must be True
         loss_hm = True
         loss_hm_landmarks = False    # Take heatmap outputs as Variable and use gradients on them
@@ -412,16 +414,15 @@ class FaceAlignment:
             # Freeze FAN
             for param in self.face_alignment_net.parameters():
                 param.requires_grad = False
-            optimizer = optim.Adam(self.face_normalization_net.parameters(), lr=0.001, weight_decay=0.7)    # loss_hm
+            optimizer = optim.Adam(self.face_normalization_net.parameters(), lr=0.0001)    # loss_hm
             # optimizer = optim.Adam(self.face_normalization_net.parameters(), lr=0.001, weight_decay=0.4)    # loss_manual_theta
             # optimizer = optim.SGD(self.face_normalization_net.parameters(), lr=0.000001, momentum=0.9, weight_decay=0.4)
             # optimizer = optim.RMSprop(self.face_normalization_net.parameters(), lr=0.00025, eps=1.e-8)
             # optimizer = optim.Adam(self.face_normalization_net.parameters(), lr=0.001)
 
         # Decay LR by a factor of 0.1 every 7 epochs
-        # scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=99, verbose=True)    # loss_hm
-        # scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=100, factor=0.5, verbose=True)    # loss_manual_theta
-        scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=3, gamma=0.2)
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=99, verbose=True)    # loss_manual_theta & loss_hm
+        # scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=3, gamma=0.2)
 
         num_epochs = 6
 
@@ -527,7 +528,7 @@ class FaceAlignment:
                         # for i in range(self.face_alignment_net.num_modules):
                         #     outp_hm.append(nn.functional.grid_sample(outp_hm[i], grid))
 
-                        w_hm = 500.0
+                        w_hm = 1000.0
                         loss = criterion(outp_hm[-1]*w_hm, heatmaps*w_hm)
                         # loss = None
                         # for i in range(self.face_alignment_net.num_modules):
@@ -544,7 +545,7 @@ class FaceAlignment:
                             manual_theta = manual_theta.cuda()
                         manual_theta = Variable(manual_theta, requires_grad=False)
                         w_theta = 100.0
-                        loss += criterion(theta*w_theta, manual_theta*w_theta)
+                        loss = criterion(theta*w_theta, manual_theta*w_theta)
 
                     if loss_manual_landmarks:
                         cropped_landmarks = landmarks.clone()
@@ -617,19 +618,19 @@ class FaceAlignment:
                             manual_landmarks_display2 = manual_landmarks_display2 + (output_org.shape[1]/4, output_org.shape[0]/4)
                             output_landmarks_image = []
                         elif loss_hm:
-                            pts_fr, _ = get_preds_fromhm(hm_frontal.data.cpu(), center, scale)
-                            pts_fr = pts_fr[idx].view(-1, 2) * 4
                             pts, pts_img = get_preds_fromhm(outp_hm[-1].data.cpu(), center, scale)
                             pts, pts_img = pts[idx].view(-1, 2) * 4 * (720/256), pts_img[idx].view(-1, 2)
-                            output_landmarks_frontal = pts_fr.numpy()
-                            output_landmarks_input = pts.numpy()
+                            pts_fr, _ = get_preds_fromhm(hm_frontal.data.cpu(), center, scale)
+                            pts_fr = pts_fr[idx].view(-1, 2) * 4
                             output_landmarks_image = pts_img.numpy()
+                            output_landmarks_input = pts.numpy()
+                            output_landmarks_frontal = pts_fr.numpy()
                         else:
-                            cropped_landmarks_display = []
-                            manual_landmarks_display1 = []
                             output_landmarks_image = []
+                            output_landmarks_input = []
+                            output_landmarks_frontal = []
 
-                        fig = plt.figure(figsize=(16, 8), tight_layout=True)
+                        fig = plt.figure(figsize=(14, 7), tight_layout=True)
                         ax = fig.add_subplot(1, 4, 1)
                         ax.axis('off')
                         ax.imshow(image)
@@ -641,14 +642,12 @@ class FaceAlignment:
                         landmarks_org = landmarks_image - (bbox[0], bbox[1])
                         landmarks_org = utils.transform(landmarks_org, center, scale, input_org.shape[0]).numpy()
                         landmarks_org = landmarks_org + (input_org.shape[1]/4, input_org.shape[0]/4)
-                        # utils.display_landmarks(ax, manual_landmarks_display1, landmarks_org)
                         utils.display_landmarks(ax, output_landmarks_input, landmarks_org)
                         ax.title.set_text("1 0 0\n0 1 0")
 
                         ax = fig.add_subplot(2, 4, 6)
                         ax.axis('off')
                         ax.imshow(output_org)
-                        # utils.display_landmarks(ax, manual_landmarks_display2, cropped_landmarks_display)
                         utils.display_landmarks(ax, output_landmarks_frontal, [])
                         ax.title.set_text("{:.3f} {:.3f} {:.1f}\n{:.3f} {:.3f} {:.1f}".format(theta_text_org[0, 0], theta_text_org[0, 1], theta_text_org[0, 2],
                                                                                               theta_text_org[1, 0], theta_text_org[1, 1], theta_text_org[1, 2]))
@@ -677,17 +676,17 @@ class FaceAlignment:
                             manual_landmarks_display2 = utils.transform(manual_landmarks_display, center, scale, output_rot.shape[0]).numpy()
                             manual_landmarks_display2 = manual_landmarks_display2 + (output_rot.shape[1]/4, output_rot.shape[0]/4)
                         elif loss_hm:
-                            pts_fr, _ = get_preds_fromhm(hm_frontal.data.cpu(), center, scale)
-                            pts_fr = pts_fr[idx_rot].view(-1, 2) * 4
                             pts, pts_img = get_preds_fromhm(outp_hm[-1].data.cpu(), center, scale)
                             pts, pts_img = pts[idx_rot].view(-1, 2) * 4 * (720/256), pts_img[idx_rot].view(-1, 2)
-                            output_landmarks_frontal = pts_fr.numpy()
-                            output_landmarks_input = pts.numpy()
+                            pts_fr, _ = get_preds_fromhm(hm_frontal.data.cpu(), center, scale)
+                            pts_fr = pts_fr[idx_rot].view(-1, 2) * 4
                             output_landmarks_image = pts_img.numpy()
+                            output_landmarks_input = pts.numpy()
+                            output_landmarks_frontal = pts_fr.numpy()
                         else:
-                            cropped_landmarks_display = []
-                            manual_landmarks_display1 = []
                             output_landmarks_image = []
+                            output_landmarks_input = []
+                            output_landmarks_frontal = []
 
                         ax = fig.add_subplot(1, 4, 3)
                         ax.axis('off')
@@ -700,7 +699,6 @@ class FaceAlignment:
                         landmarks_rot = landmarks_rot - (bbox[0], bbox[1])
                         landmarks_rot = utils.transform(landmarks_rot, center, scale, input_rot.shape[0]).numpy()
                         landmarks_rot = landmarks_rot + (input_rot.shape[1]/4, input_rot.shape[0]/4)
-                        # utils.display_landmarks(ax, manual_landmarks_display1, landmarks_rot)
                         utils.display_landmarks(ax, output_landmarks_input, landmarks_rot)
                         ax.title.set_text("{:.3f} {:.3f} {:.1f}\n{:.3f} {:.3f} {:.1f}".format(manual_theta_text[0,0], manual_theta_text[0,1], manual_theta_text[0,2],
                                                                                               manual_theta_text[1,0], manual_theta_text[1,1], manual_theta_text[1,2]))
@@ -708,7 +706,6 @@ class FaceAlignment:
                         ax = fig.add_subplot(2, 4, 8)
                         ax.axis('off')
                         ax.imshow(output_rot)
-                        # utils.display_landmarks(ax, manual_landmarks_display2, cropped_landmarks_display)
                         utils.display_landmarks(ax, output_landmarks_frontal, [])
                         ax.title.set_text("{:.3f} {:.3f} {:.1f}\n{:.3f} {:.3f} {:.1f}".format(theta_text_rot[0, 0], theta_text_rot[0, 1], theta_text_rot[0, 2],
                                                                                               theta_text_rot[1, 0], theta_text_rot[1, 1], theta_text_rot[1, 2]))
