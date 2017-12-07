@@ -379,9 +379,9 @@ class FaceAlignment:
         use_manual_rotation = True
         use_FAN_update = False
         loss_image = False
-        loss_manual_theta = True    # use_manual_rotation must be True
+        loss_manual_theta = False    # use_manual_rotation must be True
         loss_manual_landmarks = False    # use_manual_rotation must be True
-        loss_hm = False
+        loss_hm = True
         loss_hm_landmarks = False    # Take heatmap outputs as Variable and use gradients on them
 
         display_mode = True
@@ -398,7 +398,7 @@ class FaceAlignment:
         image_datasets = {x: FaceLandmarksDataset(path, type,
                                                   transforms=transforms.Compose(data_transforms))
                           for x in ['train', 'val']}
-        dataloaders = {x: DataLoader(image_datasets[x], batch_size=11, shuffle=True, num_workers=11)
+        dataloaders = {x: DataLoader(image_datasets[x], batch_size=3, shuffle=True, num_workers=5)
                        for x in ['train', 'val']}
         dataset_sizes = {x: len(image_datasets[x]) for x in ['train', 'val']}
 
@@ -414,8 +414,8 @@ class FaceAlignment:
             # Freeze FAN
             for param in self.face_alignment_net.parameters():
                 param.requires_grad = False
-            # optimizer = optim.Adam(self.face_normalization_net.parameters(), lr=0.0001, weight_decay=0.4)    # loss_hm
-            optimizer = optim.Adam(self.face_normalization_net.parameters(), lr=0.001, weight_decay=0.4)    # loss_manual_theta
+            optimizer = optim.Adam(self.face_normalization_net.parameters(), lr=0.00001, weight_decay=0.5)    # loss_hm
+            # optimizer = optim.Adam(self.face_normalization_net.parameters(), lr=0.001, weight_decay=0.4)    # loss_manual_theta
             # optimizer = optim.SGD(self.face_normalization_net.parameters(), lr=0.000001, momentum=0.9, weight_decay=0.4)
             # optimizer = optim.RMSprop(self.face_normalization_net.parameters(), lr=0.00025, eps=1.e-8)
             # optimizer = optim.Adam(self.face_normalization_net.parameters(), lr=0.001)
