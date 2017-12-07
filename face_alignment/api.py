@@ -13,7 +13,7 @@ try:
 except BaseException:
     import urllib as request_file
 
-from .models import FAN, ResNetDepth, STN, STN_padded
+from .models import FAN, ResNetDepth, STN_small
 from .utils import *
 import matplotlib.pyplot as plt
 
@@ -151,7 +151,7 @@ class FaceAlignment:
                 self.depth_prediciton_net.cuda()
             self.depth_prediciton_net.eval()
 
-        self.face_normalization_net = STN_padded()
+        self.face_normalization_net = STN_small()
         if self.enable_cuda:
             self.face_normalization_net.cuda()
 
@@ -261,7 +261,7 @@ class FaceAlignment:
             scale = (d.right() - d.left() + d.bottom() - d.top()) / 200.0
 
             if self.use_face_normalization or self.use_face_normalization_from_caffe:
-                inp = crop(image, center, scale, resolution=720.0)
+                inp = crop(image, center, scale, resolution=360.0)
             else:
                 inp = crop(image, center, scale)
                 front_img = inp
@@ -379,9 +379,9 @@ class FaceAlignment:
         use_manual_rotation = True
         use_FAN_update = False
         loss_image = False
-        loss_manual_theta = False    # use_manual_rotation must be True
+        loss_manual_theta = True    # use_manual_rotation must be True
         loss_manual_landmarks = False    # use_manual_rotation must be True
-        loss_hm = True
+        loss_hm = False
         loss_hm_landmarks = False    # Take heatmap outputs as Variable and use gradients on them
 
         display_mode = True
@@ -390,7 +390,7 @@ class FaceAlignment:
         if use_manual_rotation:
             data_transforms.append(RandomRotation(40, 10))
         data_transforms.extend((
-            LandmarkCrop(720),
+            LandmarkCrop(360),
             CreateHeatmaps(),
             ToTensor()
         ))
@@ -398,7 +398,7 @@ class FaceAlignment:
         image_datasets = {x: FaceLandmarksDataset(path, type,
                                                   transforms=transforms.Compose(data_transforms))
                           for x in ['train', 'val']}
-        dataloaders = {x: DataLoader(image_datasets[x], batch_size=3, shuffle=True, num_workers=10)
+        dataloaders = {x: DataLoader(image_datasets[x], batch_size=11, shuffle=True, num_workers=11)
                        for x in ['train', 'val']}
         dataset_sizes = {x: len(image_datasets[x]) for x in ['train', 'val']}
 
@@ -414,8 +414,8 @@ class FaceAlignment:
             # Freeze FAN
             for param in self.face_alignment_net.parameters():
                 param.requires_grad = False
-            optimizer = optim.Adam(self.face_normalization_net.parameters(), lr=0.0001)    # loss_hm
-            # optimizer = optim.Adam(self.face_normalization_net.parameters(), lr=0.001, weight_decay=0.4)    # loss_manual_theta
+            # optimizer = optim.Adam(self.face_normalization_net.parameters(), lr=0.0001, weight_decay=0.4)    # loss_hm
+            optimizer = optim.Adam(self.face_normalization_net.parameters(), lr=0.001, weight_decay=0.4)    # loss_manual_theta
             # optimizer = optim.SGD(self.face_normalization_net.parameters(), lr=0.000001, momentum=0.9, weight_decay=0.4)
             # optimizer = optim.RMSprop(self.face_normalization_net.parameters(), lr=0.00025, eps=1.e-8)
             # optimizer = optim.Adam(self.face_normalization_net.parameters(), lr=0.001)
@@ -619,7 +619,7 @@ class FaceAlignment:
                             output_landmarks_image = []
                         elif loss_hm:
                             pts, pts_img = get_preds_fromhm(outp_hm[-1].data.cpu(), center, scale)
-                            pts, pts_img = pts[idx].view(-1, 2) * 4 * (720/256), pts_img[idx].view(-1, 2)
+                            pts, pts_img = pts[idx].view(-1, 2) * 4 * (360/256), pts_img[idx].view(-1, 2)
                             pts_fr, _ = get_preds_fromhm(hm_frontal.data.cpu(), center, scale)
                             pts_fr = pts_fr[idx].view(-1, 2) * 4
                             output_landmarks_image = pts_img.numpy()
@@ -677,7 +677,7 @@ class FaceAlignment:
                             manual_landmarks_display2 = manual_landmarks_display2 + (output_rot.shape[1]/4, output_rot.shape[0]/4)
                         elif loss_hm:
                             pts, pts_img = get_preds_fromhm(outp_hm[-1].data.cpu(), center, scale)
-                            pts, pts_img = pts[idx_rot].view(-1, 2) * 4 * (720/256), pts_img[idx_rot].view(-1, 2)
+                            pts, pts_img = pts[idx_rot].view(-1, 2) * 4 * (360/256), pts_img[idx_rot].view(-1, 2)
                             pts_fr, _ = get_preds_fromhm(hm_frontal.data.cpu(), center, scale)
                             pts_fr = pts_fr[idx_rot].view(-1, 2) * 4
                             output_landmarks_image = pts_img.numpy()
