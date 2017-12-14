@@ -268,14 +268,19 @@ class STN(nn.Module):
         super(STN, self).__init__()
         self.downsample = nn.AvgPool2d(8) # or stride=448/60
         self.net1_conv1 = nn.Conv2d(3,20,5)
-        self.net1_PReLU = nn.PReLU()
+        self.net1_PReLU1 = nn.PReLU(20)
         self.net1_pool = nn.MaxPool2d(2)
         self.net1_conv2 = nn.Conv2d(20,48,5)
+        self.net1_PReLU2 = nn.PReLU(48)
         self.net1_conv3 = nn.Conv2d(48,64,3)
+        self.net1_PReLU3 = nn.PReLU(64)
         self.net1_conv4 = nn.Conv2d(64,80,3)
+        self.net1_PReLU4 = nn.PReLU(80)
         self.net1_fc5_1 = nn.Linear(80*3*3, 512)
+        self.net1_PReLU5 = nn.PReLU(512)
         self.net1_drop6 = nn.Dropout2d(0.2)
         self.net1_68point = nn.Linear(512, 136)
+        self.net1_PReLU6 = nn.PReLU(136)
         self.loc_reg_ = nn.Linear(136, 6)
         # self.loc_reg_ = nn.Linear(136, 4)
 
@@ -288,36 +293,32 @@ class STN(nn.Module):
 
         x = self.downsample(inp)    # inp: 480x480
         x = self.net1_conv1(x)
-        x = self.net1_PReLU(x)
+        x = self.net1_PReLU1(x)
         x = self.net1_pool(x)
         x = self.net1_conv2(x)
-        x = self.net1_PReLU(x)
+        x = self.net1_PReLU2(x)
         x = self.net1_pool(x)
         x = self.net1_conv3(x)
-        x = self.net1_PReLU(x)
+        x = self.net1_PReLU3(x)
         x = self.net1_pool(x)
         x = self.net1_conv4(x)
-        x = self.net1_PReLU(x)
+        x = self.net1_PReLU4(x)
         x = x.view(batch_size, -1)
         x = self.net1_fc5_1(x)
-        x = self.net1_PReLU(x)
+        x = self.net1_PReLU5(x)
         x = self.net1_drop6(x)
         x = self.net1_68point(x)
-        landmarks = self.net1_PReLU(x)    # landmarks: 136 (68x2 very inaccurate landmarks)
+        landmarks = self.net1_PReLU6(x)    # landmarks: 136 (68x2 very inaccurate landmarks)
         theta = self.loc_reg_(landmarks)
         theta = theta.view(batch_size, 2, 3)
         # theta = theta.view(batch_size, 2, 2)
 
-        if theta.is_cuda:
-            self.base_theta = self.base_theta.cuda()
-            # self.base_transl = self.base_transl.cuda()
-        # base_transl = self.base_transl.repeat(batch_size,1,1)
-        theta += self.base_theta
-        # theta = torch.cat((theta, base_transl), dim=2)
-
-        # For testing
-        # theta = Variable(torch.Tensor([[1, 0, 0],[0, 1, 0]]).cuda().view(1, 2, 3).repeat(batch_size, 1, 1), requires_grad=True)    # identity transform matrix
-        # theta = Variable(torch.Tensor([[0.8, 0.57, 0], [0, 0.8, 0]]).cuda().view(1, 2, 3).repeat(batch_size, 1, 1), requires_grad=True)  # stretching transform matrix
+        # if theta.is_cuda:
+        #     self.base_theta = self.base_theta.cuda()
+        #     # self.base_transl = self.base_transl.cuda()
+        # # base_transl = self.base_transl.repeat(batch_size,1,1)
+        # theta += self.base_theta
+        # # theta = torch.cat((theta, base_transl), dim=2)
 
         grid = F.affine_grid(theta, torch.Size([batch_size, 3, 256, 256]))   # Prepare the transfomer grid with (256, 256) size that FAN expects, w.r.t theta
         outp = F.grid_sample(inp, grid)                             # "Rotate" the image by applying the grid

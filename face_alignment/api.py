@@ -13,7 +13,7 @@ try:
 except BaseException:
     import urllib as request_file
 
-from .models import FAN, ResNetDepth, STN_small
+from .models import FAN, ResNetDepth, STN
 from .utils import *
 import matplotlib.pyplot as plt
 
@@ -151,7 +151,7 @@ class FaceAlignment:
                 self.depth_prediciton_net.cuda()
             self.depth_prediciton_net.eval()
 
-        self.face_normalization_net = STN_small()
+        self.face_normalization_net = STN()
         if self.enable_cuda:
             self.face_normalization_net.cuda()
 
@@ -175,6 +175,15 @@ class FaceAlignment:
             images_list.extend(sorted(glob.glob(os.path.join(path, files))))
 
         for image_name in images_list:
+
+            if 1:    # LandmarkCrop
+                basename = os.path.splitext(image_name)[0]
+                landmarks = np.loadtxt(basename + '.pts', skiprows=3, comments='}')
+                bbox = utils.bounding_box(landmarks)
+                np.savetxt(basename + '.rct_landmark',
+                           (bbox[0], bbox[1], bbox[2], bbox[3]), fmt='%d', newline=' ')
+                continue
+
             image = io.imread(image_name)
             tic("detect_faces")
             detected_faces = self.detect_faces(image)
@@ -254,6 +263,15 @@ class FaceAlignment:
             if 0:   # TODO: always use the generic dlib ad-hoc (cpu) face detector for now
                 d = d.rect
 
+            if type == 1:    # 300W, lfpw
+                ground_truth = np.loadtxt(os.path.splitext(input_image)[0] + '.pts', skiprows=3, comments='}')
+            elif type == 2:    # land110
+                ground_truth = np.loadtxt(os.path.splitext(input_image)[0] + '.land', skiprows=1)
+                # ground_truth = np.vstack((ground_truth[0:32:2], ground_truth[32:64], ground_truth[88:108]))
+            elif type == 4:    # 10W
+                ground_truth = np.loadtxt(os.path.splitext(input_image)[0] + '.pts')
+
+            ## Original
             center = torch.FloatTensor(
                 [d.right() - (d.right() - d.left()) / 2.0, d.bottom() -
                  (d.bottom() - d.top()) / 2.0])
@@ -261,7 +279,9 @@ class FaceAlignment:
             scale = (d.right() - d.left() + d.bottom() - d.top()) / 200.0
 
             if self.use_face_normalization or self.use_face_normalization_from_caffe:
-                inp = crop(image, center, scale, resolution=360.0)
+                # inp = crop(image, center, scale, resolution=480.0)
+                bbox = utils.bounding_box(ground_truth)
+                inp = crop2(image, bbox)
             else:
                 inp = crop(image, center, scale)
                 front_img = inp
@@ -276,20 +296,22 @@ class FaceAlignment:
                 tic("face_normalization")
                 inp, theta = self.face_normalization_net(inp)
                 stn_elapsed = toc("face_normalization")
-                running_time += stn_elapsed
-                # print("Theta: ", theta)
+                theta = theta.data
+                print("Theta: ", theta)
                 front_img = inp.data.cpu().numpy()
                 front_img = front_img[-1].transpose(1, 2, 0)
             elif self.use_face_normalization_from_caffe:
-                theta = torch.from_numpy(np.loadtxt(os.path.splitext(input_image)[0] + '.theta_cpu', skiprows=1).astype('float32')).view(1, 2, 3).cuda()
-                # theta[0,1,0] = theta[0,1,0] * -1.0
-                # theta[0,0,1] = theta[0,0,1] * -1.0
-                # theta[0,0,2] = theta[0,0,2] * -1.0
-                # theta[0,1,2] = theta[0,1,2] * -1.0
+                stn_elapsed = 0
+                theta_inv = torch.from_numpy(np.loadtxt(os.path.splitext(input_image)[0] + '.theta', skiprows=1).astype('float32')).view(1, 2, 3).cuda()
+                theta = torch.eye(3)
+                theta[:2] = theta_inv[0]
+                theta = torch.inverse(theta)[0:2].unsqueeze(0).cuda()
                 grid = nn.functional.affine_grid(theta, torch.Size([1, 3, 256, 256]))
                 inp = nn.functional.grid_sample(inp, grid)
                 front_img = inp.data.cpu().numpy()
                 front_img = front_img[-1].transpose(1, 2, 0)
+            else:
+                stn_elapsed = 0
 
             # tic("face_alignment")
             out = self.face_alignment_net(inp)[-1]
@@ -298,27 +320,27 @@ class FaceAlignment:
                 out += flip(self.face_alignment_net(Variable(flip(inp.data),
                                                              volatile=True))[-1], is_label=True)
 
-            if self.use_face_normalization or self.use_face_normalization_from_caffe:
+            if self.use_face_normalization:
                 theta_inv = torch.eye(3)
-                theta_inv[0:2] = theta.data[0]
+                theta_inv[:2] = theta[0]
                 theta_inv = torch.inverse(theta_inv)[0:2].unsqueeze(0).cuda()
+                grid = nn.functional.affine_grid(theta_inv, torch.Size([1, 68, 64, 64]))
+                out = nn.functional.grid_sample(out, grid)
+            elif self.use_face_normalization_from_caffe:
                 grid = nn.functional.affine_grid(theta_inv, torch.Size([1, 68, 64, 64]))
                 out = nn.functional.grid_sample(out, grid)
 
             pts, pts_img = get_preds_fromhm(out.data.cpu(), center, scale)
             pts, pts_img = pts.view(-1, 2) * 4, pts_img.view(-1, 2)
 
-            images_so_far += 1
-            if type == 1:    # 300W, lfpw
-                ground_truth = np.loadtxt(os.path.splitext(input_image)[0] + '.pts', skiprows=3, comments='}')
-            elif type == 2:    # land110
-                ground_truth = np.loadtxt(os.path.splitext(input_image)[0] + '.land', skiprows=1)
-                # ground_truth = np.vstack((ground_truth[0:32:2], ground_truth[32:64], ground_truth[88:108]))
-            elif type == 4:    # 10W
-                ground_truth = np.loadtxt(os.path.splitext(input_image)[0] + '.pts')
-
             mse = ((pts_img.numpy() - ground_truth) ** 2).mean(axis=None)
-            running_error += mse
+            print(mse)
+            if 1:#mse <= 200:
+                running_error += mse
+                running_time += stn_elapsed
+                images_so_far += 1
+            else:
+                return
 
             if self.landmarks_type == LandmarksType._3D:
                 heatmaps = np.zeros((68, 256, 256))
@@ -360,8 +382,9 @@ class FaceAlignment:
         running_error = 0.0
         running_time = 0
         for image_name in images_list:
-            predictions.append(
-                [image_name, self.get_landmarks(image_name, type, all_faces)])
+            preds = self.get_landmarks(image_name, type, all_faces)
+            if preds:
+                predictions.append([image_name, preds])
 
         for i, preds in enumerate(predictions):
             running_error += preds[1][4]
@@ -379,9 +402,9 @@ class FaceAlignment:
         use_manual_rotation = True
         use_FAN_update = False
         loss_image = False
-        loss_manual_theta = False    # use_manual_rotation must be True
+        loss_manual_theta = True    # use_manual_rotation must be True
         loss_manual_landmarks = False    # use_manual_rotation must be True
-        loss_hm = True
+        loss_hm = False
         loss_hm_landmarks = False    # Take heatmap outputs as Variable and use gradients on them
 
         display_mode = True
@@ -390,7 +413,7 @@ class FaceAlignment:
         if use_manual_rotation:
             data_transforms.append(RandomRotation(40, 10))
         data_transforms.extend((
-            LandmarkCrop(360),
+            LandmarkCrop(480),
             CreateHeatmaps(),
             ToTensor()
         ))
@@ -398,33 +421,41 @@ class FaceAlignment:
         image_datasets = {x: FaceLandmarksDataset(path, type,
                                                   transforms=transforms.Compose(data_transforms))
                           for x in ['train', 'val']}
-        dataloaders = {x: DataLoader(image_datasets[x], batch_size=3, shuffle=True, num_workers=5)
+        # dataloaders = {x: DataLoader(image_datasets[x], batch_size=3, shuffle=True, num_workers=5)    # loss_hm
+        dataloaders = {x: DataLoader(image_datasets[x], batch_size=16, shuffle=True, num_workers=12)    # loss_manual_theta
                        for x in ['train', 'val']}
         dataset_sizes = {x: len(image_datasets[x]) for x in ['train', 'val']}
 
-        criterion = nn.MSELoss()
-        # criterion = nn.CrossEntropyLoss()
+        criterion = nn.MSELoss()    # loss_manual_theta
+        # criterion = nn.BCEWithLogitsLoss()    # loss_hm
 
         # Observe that all parameters are being optimized
         if use_FAN_update:
             self.face_alignment_net.train()
             model_params = list(self.face_normalization_net.parameters()) + list(self.face_alignment_net.parameters())
-            optimizer = optim.SGD(model_params, lr=0.01, momentum=0.9, weight_decay=0.1)
         else:
             # Freeze FAN
             for param in self.face_alignment_net.parameters():
                 param.requires_grad = False
-            optimizer = optim.Adam(self.face_normalization_net.parameters(), lr=0.00001, weight_decay=0.5)    # loss_hm
-            # optimizer = optim.Adam(self.face_normalization_net.parameters(), lr=0.001, weight_decay=0.4)    # loss_manual_theta
-            # optimizer = optim.SGD(self.face_normalization_net.parameters(), lr=0.000001, momentum=0.9, weight_decay=0.4)
+
+        if use_FAN_update:
+            optimizer = optim.SGD(model_params, lr=0.01, momentum=0.9, weight_decay=0.1)
+        elif loss_manual_theta:
+            optimizer = optim.Adam(self.face_normalization_net.parameters(), lr=0.0001, weight_decay=0.05)
+        elif loss_hm:
+            optimizer = optim.SGD(self.face_normalization_net.parameters(), lr=0.0001, momentum=0.9, weight_decay=0.1)
+        else:
+            # optimizer = optim.Adam(self.face_normalization_net.parameters(), lr=0.001, weight_decay=0.05)    # loss_manual_theta
+            # optimizer = optim.Adam(self.face_normalization_net.parameters(), lr=0.000001, weight_decay=0.05)  # loss_manual_theta with more PReLU
             # optimizer = optim.RMSprop(self.face_normalization_net.parameters(), lr=0.00025, eps=1.e-8)
-            # optimizer = optim.Adam(self.face_normalization_net.parameters(), lr=0.001)
+            optimizer = optim.Adam(self.face_normalization_net.parameters(), lr=0.001)
 
         # Decay LR by a factor of 0.1 every 7 epochs
-        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=99, verbose=True)    # loss_manual_theta & loss_hm
-        # scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=3, gamma=0.2)
+        # scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=99, verbose=True)    # loss_hm
+        # scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.2)    # loss_hm
+        scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=2, gamma=0.2)    # loss_manual_theta
 
-        num_epochs = 6
+        num_epochs = 2
 
         ##########
         since = time.time()
@@ -523,20 +554,19 @@ class FaceAlignment:
                         theta_inv = torch.functional.stack(theta_inv)
 
                         grid = nn.functional.affine_grid(theta_inv, torch.Size([theta.data.shape[0], 68, 64, 64]))
-                        outp_hm[-1] = nn.functional.grid_sample(outp_hm[-1], grid)
-                        # outp_hm = []
-                        # for i in range(self.face_alignment_net.num_modules):
-                        #     outp_hm.append(nn.functional.grid_sample(outp_hm[i], grid))
+                        # outp_hm[-1] = nn.functional.grid_sample(outp_hm[-1], grid)
+                        for i in range(self.face_alignment_net.num_modules):
+                            outp_hm[i] = nn.functional.grid_sample(outp_hm[i], grid)
 
                         w_hm = 1000.0
-                        loss = criterion(outp_hm[-1]*w_hm, heatmaps*w_hm)
-                        # loss = None
-                        # for i in range(self.face_alignment_net.num_modules):
-                        #     moduleLoss = criterion(outp_hm[i], heatmaps)
-                        #     if loss is None:
-                        #         loss = moduleLoss
-                        #     else:
-                        #         loss += moduleLoss
+                        # loss = criterion(outp_hm[-1]*w_hm, heatmaps*w_hm)
+                        loss = None
+                        for i in range(self.face_alignment_net.num_modules):
+                            moduleLoss = criterion(outp_hm[i]*w_hm, heatmaps*w_hm)
+                            if loss is None:
+                                loss = moduleLoss
+                            else:
+                                loss += moduleLoss
 
                     if loss_manual_theta:
                         manual_theta = torch.FloatTensor(utils.transformation_matrix(0)).expand(batch_size,-1,-1)
@@ -619,7 +649,7 @@ class FaceAlignment:
                             output_landmarks_image = []
                         elif loss_hm:
                             pts, pts_img = get_preds_fromhm(outp_hm[-1].data.cpu(), center, scale)
-                            pts, pts_img = pts[idx].view(-1, 2) * 4 * (360/256), pts_img[idx].view(-1, 2)
+                            pts, pts_img = pts[idx].view(-1, 2) * 4 * (480/256), pts_img[idx].view(-1, 2)
                             pts_fr, _ = get_preds_fromhm(hm_frontal.data.cpu(), center, scale)
                             pts_fr = pts_fr[idx].view(-1, 2) * 4
                             output_landmarks_image = pts_img.numpy()
@@ -677,7 +707,7 @@ class FaceAlignment:
                             manual_landmarks_display2 = manual_landmarks_display2 + (output_rot.shape[1]/4, output_rot.shape[0]/4)
                         elif loss_hm:
                             pts, pts_img = get_preds_fromhm(outp_hm[-1].data.cpu(), center, scale)
-                            pts, pts_img = pts[idx_rot].view(-1, 2) * 4 * (360/256), pts_img[idx_rot].view(-1, 2)
+                            pts, pts_img = pts[idx_rot].view(-1, 2) * 4 * (480/256), pts_img[idx_rot].view(-1, 2)
                             pts_fr, _ = get_preds_fromhm(hm_frontal.data.cpu(), center, scale)
                             pts_fr = pts_fr[idx_rot].view(-1, 2) * 4
                             output_landmarks_image = pts_img.numpy()
@@ -749,6 +779,39 @@ class FaceAlignment:
         self.use_face_normalization = True
         self.face_normalization_net.eval()
         self.face_normalization_net.load_state_dict(torch.load(load_state_file))
+
+    def load_STN_from_caffe_weights(self, caffe_weights_path, save_state_file):
+        weights = list(self.face_normalization_net.parameters())
+        for i in range(20):    # 20 is number of weights from Caffe version, must match number of weights from Pytorch version
+            filename = caffe_weights_path + '.weights' + str(i)
+            with open(filename) as f:
+                lines = f.readlines()
+            for line in lines:
+                if line.startswith("("):
+                    axes = [int(s) for s in line.split() if s.isdigit()]
+                    dims = len(axes)
+                    for d in range(dims):
+                        assert (axes[d] == weights[i].shape[d]), "axes from file must match weights shape"
+                    n, c, h, w = 0, 0, 0, 0
+                elif line.startswith("Number"):
+                    n = int(line.split()[1])
+                elif line.startswith("Channel"):
+                    c = int(line.split()[1])
+                    h, w = 0, 0
+                else:
+                    numbers = [float(n) for n in line.split()]
+                    for num in numbers:
+                        if dims == 4:
+                            weights[i][n,c,h,w] = num
+                        elif dims == 2:
+                            weights[i][h,w] = num
+                        else:    # dims == 1
+                            weights[i][w] = num
+                        w += 1
+                    w = 0
+                    h += 1
+        torch.save(self.face_normalization_net.state_dict(), save_state_file)
+
 
     def use_STN_from_caffe(self):
         self.use_face_normalization_from_caffe = True

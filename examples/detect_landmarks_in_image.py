@@ -12,20 +12,22 @@ warnings.filterwarnings("ignore")
 fa = face_alignment.FaceAlignment(face_alignment.LandmarksType._2D,
     enable_cuda=True, flip_input=False)
 
-# fa.make_rct_files("Databases/FEI")
+# fa.make_rct_files("Databases/lfpw/testset")
+# fa.load_STN_from_caffe_weights("Models/From_TwoStage/network_300W_parts", "Models/network_300W_theta.pth")
 # result_list = []
 
-# fa.use_STN("Models/12-06_Theta.pth")
-# fa.train_STN("Databases/lfpw/trainset_normals_only", 1, "Models/12-06_Theta2.pth")
-fa.use_STN("Models/12-06_Theta3.pth")
+# fa.use_STN("Models/12-07_Theta.pth")
+# fa.train_STN("Databases/lfpw/trainset_normals_only", 1, "Models/12-07_Theta.pth")
+# fa.use_STN("Models/12-07_Theta2.pth")
 
-fa.train_STN("Databases/lfpw/trainset", 1, "Models/12-06_ThetaThenFan.pth")
+# fa.train_STN("Databases/lfpw/trainset", 1, "Models/12-13_STN.pth")
 # fa.train_STN("Databases/10W", 4, "Models/test.pth")
-fa.use_STN("Models/12-06_ThetaThenFan.pth")
+fa.use_STN("Models/12-13_STN.pth")
+# fa.use_STN("Models/network_300W_theta.pth")
 # fa.use_STN_from_caffe()
 
-result_list = fa.process_folder("Databases/lfpw/testset", 1)
-# result_list = fa.process_folder("Databases/10W", 4)
+# result_list = fa.process_folder("Databases/lfpw/testset", 1)
+result_list = fa.process_folder("Databases/10W", 4)
 
 for [image_name, preds_all] in result_list:
     landmarks, gt_landmarks, proposal_img, frontal_img, _, _ = preds_all

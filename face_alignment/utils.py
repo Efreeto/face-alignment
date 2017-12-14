@@ -167,10 +167,10 @@ def crop2(image, bbox):
     cols = image.shape[1]
     w = right-left
     h = bottom-top
-    rct_left = max(round(left - sh_scale*w), 0)
-    rct_top = max(round(top - sh_scale*h), 0)
-    rct_right = min(round(right + sh_scale*w), cols)
-    rct_bottom = min(round(bottom+ sh_scale*h), cols)
+    rct_left = int(max(round(left - sh_scale*w), 0))
+    rct_top = int(max(round(top - sh_scale*h), 0))
+    rct_right = int(min(round(right + sh_scale*w), cols))
+    rct_bottom = int(min(round(bottom+ sh_scale*h), rows))
 
     newImg = image[rct_top:rct_bottom, rct_left:rct_right]
     newImg = cv2.resize(newImg, (480, 480))
